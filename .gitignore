@@ -1,0 +1,6 @@
+*.ply
+*.blend*
+
+gaussian-splatting
+4DGaussians
+4K4D
