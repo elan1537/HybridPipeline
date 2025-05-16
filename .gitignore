@@ -1,6 +1,16 @@
 *.ply
 *.blend*
+*.jpg
+*.png
 
 gaussian-splatting
 4DGaussians
 4K4D
+
+__pycache__
+node_modules
+
+frontend/public/assets
+
+legacy
+
