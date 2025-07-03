@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import kornia
 
 def parse_payload(raw: bytes, device="cuda"):
-    vals = struct.unpack("<15f", raw) 
+    vals = struct.unpack("<32f", raw) 
     
     eye = torch.tensor([[vals[0], -vals[1], vals[2]]], dtype=torch.float32, device=device)
     target = torch.tensor([[vals[3], -vals[4], vals[5]]], dtype=torch.float32, device=device)
