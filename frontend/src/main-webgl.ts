@@ -15,7 +15,6 @@ import { getCameraIntrinsics } from './state/render-state';
 
 // --- 디코딩 경로 선택 플래그 ---
 export const USE_H264_DECODER = true; // true: H.264 VideoDecoder 사용, false: 기존 JPEG 워커 사용
-export const USE_RAW_RGB = false; // true: RAW RGB 데이터 사용, false: 기존 JPEG/H.264 사용
 
 // 1분 평균 클라이언트 측 시간 측정을 위한 유틸리티 객체
 const perfMonitor = {
@@ -341,41 +340,37 @@ function updateWsColorTextureFromRawRGB(rgbArrayBuffer: ArrayBuffer) {
 }
 
 // WS 뎁스 텍스처 업데이트를 위한 헬퍼 함수
+// main-webgl.ts
+
 function updateWsDepthTexture(depthArrayBuffer: ArrayBuffer) {
-    const nonlinearDepth = new Uint16Array(depthArrayBuffer);
+    // 이제 워커에서 항상 Float32Array 버퍼를 보내줌
+    const depthValues = new Float32Array(depthArrayBuffer);
+
     const serverCorrectionY = 1.0 / CLIENT_ASSUMED_SCALE_Y;
     const expectedServerHeight = Math.round(rtHeight * serverCorrectionY);
     const expectedServerWidth = rtWidth;
 
-    // 가드: 텍스처가 이미 존재하고 크기가 같다면, 데이터만 업데이트하고 종료 (가장 흔한 케이스)
     const isTextureReusable = wsDepthTexture &&
         wsDepthTexture.image.width === expectedServerWidth &&
-        wsDepthTexture.image.height === expectedServerHeight &&
-        wsDepthTexture.image.data.byteLength === nonlinearDepth.byteLength;
+        wsDepthTexture.image.height === expectedServerHeight;
 
     if (isTextureReusable) {
-        (wsDepthTexture.image.data as Uint16Array).set(nonlinearDepth);
+        // 데이터만 교체
+        (wsDepthTexture.image.data as Float32Array).set(depthValues);
         wsDepthTexture.needsUpdate = true;
-        return; // 여기서 함수 종료
+        return;
     }
 
-    // 위 조건들을 통과했다면, 텍스처를 무조건 새로 생성해야 함 (최초 생성 또는 사이즈 변경)
+    // 텍스처를 새로 생성
+    if (wsDepthTexture) wsDepthTexture.dispose();
 
-    // 기존 텍스처가 있다면 메모리에서 완전 해제
-    if (wsDepthTexture) {
-        wsDepthTexture.dispose();
-    }
-
-    // 새 텍스처 생성
     wsDepthTexture = new THREE.DataTexture(
-        nonlinearDepth,
+        depthValues,
         expectedServerWidth,
         expectedServerHeight,
         THREE.RedFormat,
-        THREE.HalfFloatType
+        THREE.FloatType // 32비트 Float 타입으로 변경
     );
-    wsDepthTexture.magFilter = THREE.LinearFilter;
-    wsDepthTexture.minFilter = THREE.LinearFilter;
     wsDepthTexture.needsUpdate = true;
 }
 
@@ -408,12 +403,6 @@ async function initWebSocket() {
         new DataView(buf).setUint16(2, rtHeight, true);
         ws.send(buf);
 
-
-        if (USE_H264_DECODER && !(self as any).USE_H264_FALLBACK_DISABLED) {
-            console.log(`[DEBUG] Initializing H.264 decoder...`);
-            initializeVideoDecoder();
-        }
-
         // Notify worker that the WebSocket is now open so it can pre‑allocate decoders
         wsProcessorWorker.postMessage({ type: 'ws_open' });
     };
@@ -423,7 +412,6 @@ async function initWebSocket() {
         type: 'config',
         config: {
             USE_H264_DECODER,
-            USE_RAW_RGB,
             CLIENT_ASSUMED_SCALE_Y,
             rtWidth,
             rtHeight
@@ -711,7 +699,6 @@ function onWindowResize() {
         type: 'config',
         config: {
             USE_H264_DECODER,
-            USE_RAW_RGB,
             CLIENT_ASSUMED_SCALE_Y,
             rtWidth,
             rtHeight

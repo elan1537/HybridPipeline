@@ -40,7 +40,7 @@ print(f"Far Clip: {DEPTH_FAR_CLIP}")
 # nvimgcodec 임포트 확인
 try:
     from nvidia import nvimgcodec as nvc
-    encoder = nvc.Encoder()
+    image_encoder = nvc.Encoder()
     # decoder = nvc.Decoder() # 디코더는 현재 사용 안 함
     NVC_AVAILABLE = True
 except ImportError:
@@ -477,345 +477,6 @@ async def render_loop(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue):
         print(f"Render loop finished for {ws.remote_address}")
 
 
-# async def render_4dgs_loop(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue):
-#     global width, height
-#     import torch
-#     import torch.nn.functional as F
-#     import kornia
-    
-#     device = "cuda"
-        
-#     global width, height, scene
-#     print(f"Render loop started for {ws.remote_address}")
-
-#     last_mat = None
-#     frame_idx_total = 0
-#     frame_idx_collected = 0
-
-#     prev_width = -1 
-#     prev_height = -1
-#     last_time = None
-
-#     # 1분 평균 시간 측정을 위한 변수
-#     last_print_time = time.time() # 이 부분을 time.time()으로 변경
-#     one_minute_timings = {
-#         "parse": 0.0,
-#         "render": 0.0,
-#         "jpeg_encode": 0.0,
-#         "depth": 0.0,
-#         "send": 0.0,
-#         "send_call_duration": 0.0, # ws.send() 호출 시간
-#         "total_cycle": 0.0  # 루프 전체 시간
-#     }
-#     one_minute_frame_count = 0
-
-#     def legacy_view_mat(vals):
-#         eye = torch.tensor([[vals[0], -vals[1], vals[2]]], dtype=torch.float32, device=device)
-#         target = torch.tensor([[vals[3], -vals[4], vals[5]]], dtype=torch.float32, device=device)
-#         up = torch.tensor([[0., -1., 0]], dtype=torch.float32, device=device)
-
-#         zaxis = F.normalize(target - eye, dim=-1)
-#         xaxis = F.normalize(torch.cross(up, zaxis, dim=-1), dim=-1)
-#         yaxis = torch.cross(zaxis, xaxis, dim=-1)
-
-#         R_w2c = torch.stack([xaxis.squeeze(0), yaxis.squeeze(0), zaxis.squeeze(0)], dim=0).unsqueeze(0)
-
-#         t = -R_w2c @ eye.unsqueeze(-1)
-#         view = kornia.geometry.conversions.Rt_to_matrix4x4(R_w2c, t).squeeze(0)
-#         view_mat = torch.tensor([[
-#             [view[0, 0], view[1, 0], view[2, 0], 0],
-#             [view[0, 1], view[1, 1], view[2, 1], 0],
-#             [view[0, 2], view[1, 2], view[2, 2], 0],
-#             [view[0, 3], view[1, 3], view[2, 3], 1]
-#         ]], device=device).squeeze(0)
-
-#         return view_mat
-    
-#     legacy_way = False
-
-#     while True:
-#         # t_start = time.perf_counter() # Unix 시간으로 변경
-#         loop_start_time_4dgs_ms = time.time() * 1000
-        
-#         raw_payload, client_send_ts_ms, server_recv_ts_ms = await q.get()
-
-#         # 임시: 3DGS와 같이 payload 파싱 (실제로는 4DGS에 맞게 수정 필요)
-#         try:
-#             importlib.reload(ws_handler) # 필요하다면
-
-#             if len(raw_payload) == (16+9+1+16+6) * 4: # float32 크기
-#                  vals = struct.unpack(f"<{16+9+1+16+6}f", raw_payload)
-#                  view_mat = torch.tensor([
-#                     [vals[0], vals[1], vals[2], vals[3]],
-#                     [vals[4], vals[5], vals[6], vals[7]],
-#                     [vals[8], vals[9], vals[10], vals[11]],
-#                     [vals[12], vals[13], vals[14], vals[15]]
-#                 ], device=device, dtype=torch.float32)
-#                  now_time = vals[25] # scene_time
-#                  proj_matrix = torch.tensor([
-#                     [vals[26], vals[27], vals[28], vals[29]],
-#                     [vals[30], vals[31], vals[32], vals[33]],
-#                     [vals[34], vals[35], vals[36], vals[37]],
-#                     [vals[38], vals[39], vals[40], vals[41]]
-#                 ], device=device, dtype=torch.float32)
-#             else:
-#                 print(f"[4DGS] Error: Unexpected payload length for parsing: {len(raw_payload)}")
-#                 q.task_done()
-#                 continue
-
-#         except Exception as e:
-#             print(f"[4DGS] Error parsing payload: {e}")
-#             q.task_done()
-#             continue
-
-
-#         # t_parse = time.perf_counter()
-#         parse_time_4dgs_ms = time.time() * 1000
-
-#         size_changed = (prev_width != width or prev_height != height)
-#         matrix_changed = (last_mat is None or not torch.allclose(view_mat, last_mat, atol=1e-5))
-#         time_changed = (last_time is None or not last_time == now_time)
-
-#         should_skip_render = (not size_changed and not matrix_changed and not time_changed)
-
-#         if should_skip_render:
-#             q.task_done()
-#             await asyncio.sleep(0.001) # Prevent busy-waiting
-#             continue # Skip rendering
-
-    
-#         # --- 렌더링 ---
-#         current_render_width = width
-#         current_render_height = height
-
-#         client_requested_height = height # 현재 전역 height 사용
-
-#         # 서버에서 보정할 Y 스케일 팩터
-#         server_correction_y = 1.0 / CLIENT_ASSUMED_SCALE_Y if CLIENT_ASSUMED_SCALE_Y > 0 else 1.0
-
-#         # 실제 렌더링에 사용할 보정된 높이
-#         # 정수 값으로 변환 필요할 수 있음
-#         corrected_render_height = round(client_requested_height * server_correction_y)
-#         current_render_width = width # 너비는 그대로 사용 (또는 X 스케일도 고려)
-
-    
-#         rendered_color, rendered_depth, rendered_alpha = scene.render_4dgs(viewmat=view_mat, 
-#                                                             projmat=proj_matrix, 
-#                                                             width=current_render_width, 
-#                                                             height=corrected_render_height, 
-#                                                             near=DEPTH_NEAR_CLIP, 
-#                                                             far=DEPTH_FAR_CLIP, 
-#                                                             scene_time=now_time)
-#         # t_render = time.perf_counter()
-#         render_time_4dgs_ms = time.time() * 1000
-
-#         last_mat = view_mat.clone()
-#         last_time = now_time
-#         prev_width = current_render_width # 이번에 렌더링한 크기 저장
-#         prev_height = current_render_height # 이번에 렌더링한 크기 저장
-
-#         # --- 컬러 이미지 처리 (JPEG 인코딩) ---
-#         rgb_cuda = rendered_color.permute(1, 2, 0).mul(255).clamp(0, 255).to(torch.uint8).contiguous()
-#         rgb_cuda = rgb_cuda.flip(0)
-#         # rgb_cuda = rgb_cuda.flip(1)
-
-#         # rendered_depth = rendered_depth.flip(1)
-#         # rendered_depth = rendered_depth.flip(2)
-
-#         # rendered_alpha = rendered_alpha.flip(1)
-#         # rendered_alpha = rendered_alpha.flip(2)
-
-#         img_nv = nvc.as_image(rgb_cuda)
-#         jpeg_bytes = encoder.encode(img_nv, "jpeg", params=nvc.EncodeParams(quality=JPEG_QUALITY))
-
-#         with open("rendered_color.jpg", "wb") as f:
-#             f.write(jpeg_bytes)
-
-#         # t_jpeg = time.perf_counter()
-#         jpeg_time_4dgs_ms = time.time() * 1000
-#         depth_cuda = rendered_depth.clone()
-#         alpha_cuda = rendered_alpha
-
-#         depth_cuda_mod = depth_cuda.clone()
-        
-#         if not OUTPUT_WEBGPU_DEPTH_FOR_3DGS:
-#             ALPHA_CUTOFF = 0.05  # 알파 값 임계치
-#             depth_cuda_mod[alpha_cuda < ALPHA_CUTOFF] = torch.nan  # 알파 낮은 부분 NaN 처리
-
-#             N = DEPTH_NEAR_CLIP
-#             F = DEPTH_FAR_CLIP
-            
-#             # WebGL NDC Z 변환: z_ndc = ( (F+N)/(F-N) ) - ( 2*F*N / ( (F-N) * z_eye ) )
-#             # z_eye = N -> z_ndc = -1
-#             # z_eye = F -> z_ndc = 1
-            
-#             term_A = (F + N) / (F - N)
-#             term_B_num = 2 * F * N
-#             denominator_term_B = (F - N) * depth_cuda_mod
-#             calculated_ndc_webgl = term_A - (term_B_num / denominator_term_B)
-#             final_ndc_webgl = torch.clamp(calculated_ndc_webgl, -1.0, 1.0)
-
-#             depth_uint10 = (
-#                 ((final_ndc_webgl + 1.0) * 0.5) * 1023.0
-#             ).round().clamp(0, 1023).to(torch.uint16)
-            
-#             depth_y_plane = (depth_uint10.to(torch.int32) * 64).to(torch.uint16).contiguous()
-#             H, W = depth_uint10.shape
-
-#             # P010(YUV420_10BIT) 포맷: Y [H, W], UV [H//2, W] (interleaved, 0으로 채움)
-#             uv_zero = torch.zeros((H // 2, W), dtype=torch.uint16, device=depth_y_plane.device)
-#             depth_p010 = torch.cat([depth_y_plane, uv_zero], dim=0)   # shape [(H*3/2), W]
-
-#             depth_bitstream = depth_encoder.Encode(depth_p010)
-#             depth_bytes = bytes(depth_bitstream)
-
-#             depth_time_ms = time.perf_counter() * 1000
-
-#             # 디버깅: 뎁스 데이터 정보 로깅
-#             print(f"[DEBUG] Depth data info:")
-#             print(f"  - Original depth shape: {depth_uint10.shape}")
-#             print(f"  - P010 shape: {depth_p010.shape}")
-#             print(f"  - Encoded depth size: {len(depth_bytes)} bytes")
-#             print(f"  - Expected HEVC size for {width}x{height}: ~{width*height//10} bytes")
-
-#         else:
-#             # ALPHA_CUTOFF = 0.1
-
-#             # border_mask      = (alpha_cuda < ALPHA_CUTOFF) & (alpha_cuda > 0.0)
-#             # depth_cuda_mod[border_mask]  = torch.nan      # 경계도 전부 NaN
-#             # depth_cuda_mod[alpha_cuda <= 0.0] = torch.nan
-
-#             depth_01_scale = (DEPTH_FAR_CLIP * (depth_cuda_mod - DEPTH_NEAR_CLIP)) / (depth_cuda_mod * (DEPTH_FAR_CLIP - DEPTH_NEAR_CLIP))
-#             depth_01_scale[alpha_cuda <= 0.0] = torch.nan
-
-#             result = cv2.imwrite("rendered_depth.jpg", depth_01_scale.mul(255).to(torch.uint8).cpu().numpy())
-            
-#             depth_01_scale = depth_01_scale.to(torch.float16)
-#             depth_bytes = depth_01_scale.contiguous().cpu().detach().numpy().tobytes()
-
-#         # t_depth = time.perf_counter()
-#         depth_time_4dgs_ms = time.time() * 1000
-        
-#         server_process_end_4dgs_ms = time.time() * 1000 # 송신 직전
-#         header = struct.pack("<IIddd", len(jpeg_bytes), len(depth_bytes), 
-#                              client_send_ts_ms, server_recv_ts_ms, server_process_end_4dgs_ms)
-        
-#         send_call_start_4dgs_ms = time.time() * 1000
-#         await ws.send(header + jpeg_bytes + depth_bytes)
-#         send_call_end_4dgs_ms = time.time() * 1000
-#         send_call_duration_4dgs_ms = send_call_end_4dgs_ms - send_call_start_4dgs_ms
-
-
-#         # t_send = time.perf_counter()
-#         send_time_4dgs_ms = time.time() * 1000
-
-#         frame_idx_total += 1
-
-#         q.task_done() # 큐 작업 완료 알림
-
-#         # 현재 프레임의 각 단계별 시간 계산 (ms 단위)
-#         # time_parse = t_parse - t_start # 아래에서 Unix 시간으로
-#         # time_render = t_render - t_parse
-#         # time_jpeg = t_jpeg - t_render
-#         # time_depth = t_depth - t_jpeg
-#         # time_send = t_send - t_depth
-#         # total_cycle_time = t_send - t_start
-
-#         time_parse_ms = parse_time_4dgs_ms - loop_start_time_4dgs_ms
-#         time_render_ms = render_time_4dgs_ms - parse_time_4dgs_ms
-#         time_jpeg_ms = jpeg_time_4dgs_ms - render_time_4dgs_ms
-#         time_depth_ms = depth_time_4dgs_ms - jpeg_time_4dgs_ms
-#         time_send_ms = send_time_4dgs_ms - depth_time_4dgs_ms
-#         total_cycle_time_ms = send_time_4dgs_ms - loop_start_time_4dgs_ms
-
-#         # 1분 통계 누적 (초 단위로 변환하여 저장)
-#         one_minute_timings["parse"] += time_parse_ms / 1000.0
-#         one_minute_timings["render"] += time_render_ms / 1000.0
-#         one_minute_timings["jpeg_encode"] += time_jpeg_ms / 1000.0
-#         one_minute_timings["depth"] += time_depth_ms / 1000.0
-#         one_minute_timings["send"] += time_send_ms / 1000.0
-#         one_minute_timings["send_call_duration"] += send_call_duration_4dgs_ms / 1000.0 # 초 단위로 저장
-#         one_minute_timings["total_cycle"] += total_cycle_time_ms / 1000.0
-#         # jpeg_size, depth_size는 이전 루프와 동일하게 처리 가정 (여기서는 생략)
-#         one_minute_frame_count += 1
-
-#         # print(f"parse: {time_parse:.4f}, render: {time_render:.4f}, jpeg: {time_jpeg:.4f}, depth: {time_depth:.4f}, send: {time_send:.4f}")
-#         # print(f"4DGS UnixTsPerf (ms): Parse={time_parse_ms:.2f}, Render={time_render_ms:.2f}, JPEG={time_jpeg_ms:.2f}, Depth={time_depth_ms:.2f}, Send={time_send_ms:.2f}, TotalCycle={total_cycle_time_ms:.2f}")
-#         # 상세 로그에 send_call_duration_4dgs_ms 추가
-#         print(f"4DGS UnixTsPerf (ms): Parse={time_parse_ms:.2f}, Render={time_render_ms:.2f}, JPEG={time_jpeg_ms:.2f}, Depth={time_depth_ms:.2f}, Send={time_send_ms:.2f}, SendCallDur={send_call_duration_4dgs_ms:.2f}, TotalCycle={total_cycle_time_ms:.2f}")
-
-
-#         # 1분 경과 시 평균 출력
-#         current_time_unix_ms_4dgs = time.time() * 1000
-#         if current_time_unix_ms_4dgs - (last_print_time * 1000) >= 60000.0: # last_print_time이 Unix 시간(초) 기준
-#             if one_minute_frame_count > 0:
-#                 print("--- 1-Minute Average Performance Statistics (4DGS) (seconds) ---")
-#                 print(f"{'Stage':<18} | {'Avg Time':<10}")
-#                 print("-" * 40)
-#                 for stage, total_time in one_minute_timings.items():
-#                     avg_time = total_time / one_minute_frame_count
-#                     print(f"{stage:<18} | {avg_time:<10.4f}")
-                
-#                 avg_fps_one_min = one_minute_frame_count / ((current_time_unix_ms_4dgs - (last_print_time*1000)) / 1000.0)
-#                 print(f"Average FPS (last 1 min): {avg_fps_one_min:.2f}")
-#                 print("-" * 40)
-
-#             # 변수 초기화
-#             one_minute_timings = {key: 0.0 for key in one_minute_timings}
-#             one_minute_frame_count = 0
-#             last_print_time = time.time() # Unix 시간(초)으로 업데이트
-
-#     except asyncio.CancelledError:
-#          print(f"Render loop cancelled for {ws.remote_address}")
-#     except Exception as e:
-#         print(f"Error in render loop for {ws.remote_address}: {e}")
-#     finally:
-#         print(f"Render loop finished for {ws.remote_address}")
-
-
-def split_hevc_header(data: bytes):
-    """
-    HEVC 비트스트림에서 헤더(VPS, SPS, PPS)와 프레임 데이터를 분리합니다.
-
-    :param data: 인코더에서 나온 전체 바이트 데이터
-    :return: (헤더 바이트, 프레임 바이트) 튜플
-    """
-    start_code = b'\x00\x00\x00\x01'
-    nal_units = data.split(start_code)
-    nal_units = [unit for unit in nal_units if unit] # 빈 조각 제거
-
-    print(f"[DEBUG] Found {len(nal_units)} NAL units in bitstream")
-
-    header_nals = []
-    frame_nals_start_index = -1
-
-    for i, unit in enumerate(nal_units):
-        # NAL 유닛 타입은 첫 바이트의 특정 비트에 있습니다.
-        nal_type = (unit[0] >> 1) & 0b00111111
-        print(f"[DEBUG] NAL unit {i}: type={nal_type}, length={len(unit)} bytes")
-
-        # VPS (32), SPS (33), PPS (34)는 헤더로 간주합니다.
-        if nal_type in [32, 33, 34]:
-            header_nals.append(start_code + unit)
-            print(f"[DEBUG] Added NAL type {nal_type} to headers")
-        else:
-            # 헤더가 아닌 NAL 유닛(예: 프레임 데이터)이 시작되는 위치를 기록
-            frame_nals_start_index = i
-            print(f"[DEBUG] Found non-header NAL type {nal_type}, stopping header search")
-            break
-
-    print(f"[DEBUG] Header NALs found: {len(header_nals)}")
-    print(f"[DEBUG] Frame NALs start at index: {frame_nals_start_index}")
-
-    if not header_nals or frame_nals_start_index == -1:
-        raise ValueError("스트림에서 헤더(VPS/SPS/PPS)를 찾을 수 없습니다.")
-
-    # 분리된 헤더와 프레임 데이터를 조합합니다.
-    header_bytes = b''.join(header_nals)
-    frame_bytes = start_code + start_code.join(nal_units[frame_nals_start_index:])
-    
-    return header_bytes, frame_bytes
-
 async def render_jpeg_test_loop(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue, send_q: asyncio.Queue):
     """
     Renders the scene, encodes the color image to H.264 or sends raw RGB data,
@@ -877,8 +538,8 @@ async def render_jpeg_test_loop(ws: websockets.WebSocketServerProtocol, q: async
         # video_file = open(f"session_video_{ws.remote_address[0]}_{ws.remote_address[1]}.h264", "wb")
         
         # Depth H.265 파일 열기 (연결별로 고유 파일명)
-        depth_video_file = open(f"depth_video.h265", "wb")
-        print(f"[+] Depth H.265 file opened: depth_video.h265")
+        depth_video_file = open(f"depth_video.h264", "wb")
+        print(f"[+] Depth H.264 file opened: depth_video.h264")
         
         while True:
             raw_payload, client_send_timestamp_ms, server_recv_timestamp_ms = await q.get()
@@ -981,100 +642,109 @@ async def render_jpeg_test_loop(ws: websockets.WebSocketServerProtocol, q: async
             # background = torch.zeros_like(rgb_cuda)
             # rgb_cuda = rgb_cuda * alpha_cuda.unsqueeze(-1) + background * (1 - alpha_cuda.unsqueeze(-1))
 
-            if usingRawRGB:
-                raw_rgb_start_ms = time.perf_counter() * 1000
+            r = rgb_cuda[..., 0].float()
+            g = rgb_cuda[..., 1].float()
+            b = rgb_cuda[..., 2].float()
+            
+            # BT.709 변환 행렬
+            y = 0.299 * r + 0.587 * g + 0.114 * b
+            u = -0.169 * r - 0.331 * g + 0.500 * b + 128
+            v = 0.500 * r - 0.419 * g - 0.081 * b + 128
+            
+            # 클램핑
+            y = torch.clamp(y, 0, 255).to(torch.uint8)
+            u = torch.clamp(u, 0, 255).to(torch.uint8)
+            v = torch.clamp(v, 0, 255).to(torch.uint8)
+            
+            # Y 평면
+            y_plane = y.contiguous()
+            
+            # UV 서브샘플링 (벡터화된 방식)
+            # 2x2 블록의 평균을 계산 (float로 변환 후 계산)
+            u_reshaped = u.view(height//2, 2, width//2, 2).float().mean(dim=(1, 3)).to(torch.uint8)
+            v_reshaped = v.view(height//2, 2, width//2, 2).float().mean(dim=(1, 3)).to(torch.uint8)
+            
+            # UV 인터리빙 (U, V가 번갈아가며 나오도록)
+            # [H//2, W//2] -> [H//2, W] (U와 V가 번갈아가며)
+            uv_plane = torch.zeros(height//2, width, dtype=torch.uint8, device=rgb_cuda.device)
+            uv_plane[:, 0::2] = u_reshaped  # 짝수 열에 U
+            uv_plane[:, 1::2] = v_reshaped  # 홀수 열에 V
+            
+            # NV12 포맷으로 연결
+            nv12 = torch.cat([y_plane, uv_plane], dim=0)
 
-                rgba_cuda = torch.cat([rgb_cuda, alpha_uint8.unsqueeze(-1)], dim=-1)  # [H, W, 4]
-                rgba_cuda = rgba_cuda.to(torch.uint8)
-                rgba_bytes = rgba_cuda.contiguous().cpu().numpy().tobytes()
+            video_bitstream = encoder.Encode(nv12)
+            video_bitstream = bytes(video_bitstream)
+            
+            # # 인코딩된 비디오 비트스트림을 파일에 append
+            # video_file.write(video_bitstream)
 
-                raw_rgb_time_ms = time.perf_counter() * 1000
-                color_data = rgba_bytes
-                color_data_size = len(rgba_bytes)
-            else:
-                r = rgb_cuda[..., 0].float()
-                g = rgb_cuda[..., 1].float()
-                b = rgb_cuda[..., 2].float()
-                
-                # BT.709 변환 행렬
-                y = 0.299 * r + 0.587 * g + 0.114 * b
-                u = -0.169 * r - 0.331 * g + 0.500 * b + 128
-                v = 0.500 * r - 0.419 * g - 0.081 * b + 128
-                
-                # 클램핑
-                y = torch.clamp(y, 0, 255).to(torch.uint8)
-                u = torch.clamp(u, 0, 255).to(torch.uint8)
-                v = torch.clamp(v, 0, 255).to(torch.uint8)
-                
-                # Y 평면
-                y_plane = y.contiguous()
-                
-                # UV 서브샘플링 (벡터화된 방식)
-                # 2x2 블록의 평균을 계산 (float로 변환 후 계산)
-                u_reshaped = u.view(height//2, 2, width//2, 2).float().mean(dim=(1, 3)).to(torch.uint8)
-                v_reshaped = v.view(height//2, 2, width//2, 2).float().mean(dim=(1, 3)).to(torch.uint8)
-                
-                # UV 인터리빙 (U, V가 번갈아가며 나오도록)
-                # [H//2, W//2] -> [H//2, W] (U와 V가 번갈아가며)
-                uv_plane = torch.zeros(height//2, width, dtype=torch.uint8, device=rgb_cuda.device)
-                uv_plane[:, 0::2] = u_reshaped  # 짝수 열에 U
-                uv_plane[:, 1::2] = v_reshaped  # 홀수 열에 V
-                
-                # NV12 포맷으로 연결
-                nv12 = torch.cat([y_plane, uv_plane], dim=0)
-
-                video_bitstream = encoder.Encode(nv12)
-                video_bitstream = bytes(video_bitstream)
-                
-                # # 인코딩된 비디오 비트스트림을 파일에 append
-                # video_file.write(video_bitstream)
-
-                h264_time_ms = time.perf_counter() * 1000
-                color_data = video_bitstream
-                color_data_size = len(video_bitstream)
+            h264_time_ms = time.perf_counter() * 1000
+            color_data = video_bitstream
+            color_data_size = len(video_bitstream)
 
             # --- Depth Data Processing ---
-            depth_cuda_raw = render_colors[0, ..., -1].float()
-            alpha_float = render_alphas[0, ..., 0].float()
-            depth_cuda_mod = depth_cuda_raw.clone()
-
             # ALPHA_CUTOFF = 0.5
             # depth_cuda_mod[alpha_float < ALPHA_CUTOFF] = torch.nan
 
-            N, F = DEPTH_NEAR_CLIP, DEPTH_FAR_CLIP
-            term_A = (F + N) / (F - N)
-            term_B_num = 2 * F * N
-            denominator_term_B = (F - N) * depth_cuda_mod
-            calculated_ndc_webgl = term_A - (term_B_num / denominator_term_B)
-            final_ndc_webgl = torch.clamp(calculated_ndc_webgl, -1.0, 1.0)
+            # ####################################################################
+            # ### START: Depth to 8-bit Grayscale H.264 Encoding ###
+            # ####################################################################
+            # --- 1. Get 16-bit float depth map ---
+            depth_cuda_raw = render_colors[0, ..., -1].float()
+            H, W = depth_cuda_raw.shape
 
-            depth_uint10 = (
-                ((final_ndc_webgl + 1.0) * 0.5) * 1023.0
-            ).round().clamp(0, 1023).to(torch.uint16)
-            
-            depth_y_plane = (depth_uint10.to(torch.int32) * 64).to(torch.uint16).contiguous()
-            H, W = depth_uint10.shape
+            # --- 2. Normalize to 0-1 range ---
+            # Inverse of WebGL NDC transform to get linear depth [0, 1]
+            # This part depends on how depth is packed. Assuming it's linear depth for now.
+            # If it's already in a specific range, adjust accordingly.
+            # Let's assume `depth_cuda_raw` is linear depth from near to far clip.
+            depth_normalized_01 = (depth_cuda_raw - DEPTH_NEAR_CLIP) / (DEPTH_FAR_CLIP - DEPTH_NEAR_CLIP)
+            depth_normalized_01 = torch.clamp(depth_normalized_01, 0.0, 1.0) # Clamp to be safe
 
-            # P010(YUV420_10BIT) 포맷: Y [H, W], UV [H//2, W] (interleaved, 0으로 채움)
-            uv_zero = torch.zeros((H // 2, W), dtype=torch.uint16, device=depth_y_plane.device)
-            depth_p010 = torch.cat([depth_y_plane, uv_zero], dim=0)   # shape [(H*3/2), W]
+            # --- 3. Convert to 8-bit grayscale (0-255) ---
+            depth_8bit_grayscale = (depth_normalized_01 * 255.0).to(torch.uint8).contiguous()
 
-            depth_bitstream = depth_encoder.Encode(depth_p010)
-            depth_bytes = bytes(depth_bitstream)
+            # --- 4. Prepare NV12 frame for H.264 encoder ---
+            # Y plane is our 8-bit depth map
+            depth_y_plane_8bit = depth_8bit_grayscale
 
-            depth_video_file.write(depth_bytes)
+            # U and V planes are black (value 128 for neutral chroma)
+            # YUV420 has chroma planes at half resolution
+            uv_plane_black_8bit = torch.full(
+                (H // 2, W), 
+                128, # Neutral gray for chroma
+                dtype=torch.uint8, 
+                device=depth_y_plane_8bit.device
+            )
+
+            # Concatenate to form NV12 format (Y plane followed by interleaved UV plane)
+            nv12_depth = torch.cat([depth_y_plane_8bit, uv_plane_black_8bit], dim=0)
+
+            # --- 5. Encode with H.264 depth encoder ---
+            depth_bitstream = bytes(depth_encoder.Encode(nv12_depth))
+
+            # Save to file for debugging
+            if depth_bitstream:
+                depth_video_file.write(depth_bitstream)
+
+            # depth_grayscale = nvc.as_image(depth_uint8)
+            # jpeg_bytes = image_encoder.encode(depth_grayscale, "jpeg", params=nvc.EncodeParams(quality=JPEG_QUALITY))
+
+            # with open("depth_grayscale.jpeg", "wb") as f:
+            #     f.write(jpeg_bytes)
 
             depth_time_ms = time.perf_counter() * 1000
 
             # --- Data Preparation for Transmission ---
             server_process_end_timestamp_ms = time.time() * 1000
-            header = struct.pack("<IIddd", color_data_size, len(depth_bytes),
+            header = struct.pack("<IIddd", color_data_size, len(depth_bitstream),
                                 client_send_timestamp_ms, server_recv_timestamp_ms, server_process_end_timestamp_ms)
 
             # 전송 큐에 데이터 추가 (렌더링 루프는 블로킹되지 않음)
-            await send_q.put((header, color_data, depth_bytes, frame_count))
+            await send_q.put((header, color_data, depth_bitstream, frame_count))
             
-            depth_size = len(depth_bytes) if depth_bytes is not None else 0
+            depth_size = len(depth_bitstream) if depth_bitstream is not None else 0
             print(f"[{frame_count:03d}] RENDER: {depth_time_ms - loop_start_time_ms:.2f}ms, color_data: {(color_data_size)}Bytes, depth_data: {depth_size}Bytes")
 
             # 성능 통계 업데이트
@@ -1134,7 +804,7 @@ async def render_jpeg_test_loop(ws: websockets.WebSocketServerProtocol, q: async
         # 파일 안전하게 닫기
         if depth_video_file is not None:
             depth_video_file.close()
-            print(f"[+] Depth H.265 file closed: depth_video_{ws.remote_address[0]}_{ws.remote_address[1]}.h265")
+            print(f"[+] Depth H.264 file closed: depth_video.h264")
 
 
 async def send_loop(ws: websockets.WebSocketServerProtocol, send_q: asyncio.Queue):
@@ -1211,55 +881,36 @@ async def handler(ws: websockets.WebSocketServerProtocol):
             await ws.close()
             return
         
-        if not usingRawRGB:
-            color_encoder_params = {
-                "codec": "h264",
-                "gop": 1,
-                "preset": "P1",
-                "colorspace": "bt709",
-                "color_range": "full",  # 또는 "limited"
-                "bitrate": 5000000,     # 5Mbps (빠른 전송을 위해 적절한 비트레이트)
-                "max_bitrate": 10000000, # 10Mbps 최대
-                "profile": "baseline",   # 빠른 디코딩을 위한 baseline 프로파일
-                "level": "4.1",          # 적절한 레벨
-            }
+        color_encoder_params = {
+            "codec": "h264",
+            "preset": "P1", # P1: Fastest
+            "bitrate": 8000000, # 8Mbps
+            "profile": "baseline",
+            "gop": 1,
+        }
+        encoder = nvvc.CreateEncoder(
+            width=width,
+            height=height,
+            fmt="NV12", # RGB to NV12,
+            usecpuinputbuffer=False,
+            **color_encoder_params
+        )
 
-            encoder = nvvc.CreateEncoder(
-                width=width,
-                height=height,
-                fmt="NV12",
-                usecpuinputbuffer=False,
-                **color_encoder_params
-            )
-
-            depth_encoder_params = {
-                "codec": "hevc",
-                "profile": "main10",           # HEVC Main 10 프로파일 명시
-                "level": "4.0",                # Level 4.0
-                "rc": "cbr",
-                "bitrate"     : 5000000,       # 5 Mb/s
-                "maxbitrate"  : 5000000,
-                "vbvbufsize"  : 5000000,
-                "vbvinit"     : 5_000_000,
-
-                # GOP / 키프레임
-                "gop"         : 1,               # 모든 프레임 IDR (참조 의존성 제거)
-                "idrperiod"   : 1,               # = gop
-                "bf"          : 0,               # I-frame + P-frames 없음 → I-I-I…
-                
-                # 헤더 강제 생성 옵션
-                "insertSEI"   : 1,               # SEI 삽입
-                "insertVUI"   : 1,               # VUI 삽입
-            }
-
-
-            depth_encoder = nvvc.CreateEncoder(
-                width=width,
-                height=height,
-                fmt="P010",  # YUV420_10BIT 대신 YUV444_10BIT 사용
-                usecpuinputbuffer=False,
-                **depth_encoder_params
-            )
+        # --- H.264 Depth Encoder (8-bit Grayscale) ---
+        depth_encoder_params = {
+            "codec": "h264",
+            "preset": "P1",
+            "bitrate": 4000000, # 4Mbps for depth
+            "profile": "baseline",
+            "gop": 1,
+        }
+        depth_encoder = nvvc.CreateEncoder(
+            width=width,
+            height=height,
+            fmt="NV12", # Grayscale data will be put into Y plane of NV12
+            usecpuinputbuffer=False,
+            **depth_encoder_params
+        )
 
             ### Supported formats:
             # - NV12, YUV420, ARGB, ABGR (always supported)
@@ -1274,13 +925,6 @@ async def handler(ws: websockets.WebSocketServerProtocol):
         
         # 수신 루프, 렌더링 루프, 전송 루프를 동시에 실행
         recv_task = asyncio.create_task(recv_loop(ws, q))
-        
-        # if using4DGS:
-        #     render_task = asyncio.create_task(render_4dgs_loop(ws, q, send_q))
-        # elif usingH264 or usingRawRGB: # H.264 또는 RAW RGB 사용
-        #     render_task = asyncio.create_task(render_jpeg_test_loop(ws, q, send_q))
-        # else:
-        #     render_task = asyncio.create_task(render_loop(ws, q, send_q))
 
         render_task = asyncio.create_task(render_jpeg_test_loop(ws, q, send_q))
             
