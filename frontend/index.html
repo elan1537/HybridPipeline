@@ -10,6 +10,215 @@
     </style>
   </head>
   <body>
-    <script type="module" src="./src/main.ts"></script>
+    <script type="module" src="./src/legacy/main-webgl.ts"></script>
   </body>
 </html>
+
+<!-- <!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebCodecs 10-Bit Depth Map Decoder</title>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
+          'Open Sans', 'Helvetica Neue', sans-serif;
+        background-color: #1a1a1a;
+        color: #e0e0e0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+      h1 {
+        color: #4caf50;
+      }
+      #video-container {
+        border: 2px solid #444;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        background-color: #000;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        max-width: 80vw;
+        height: auto;
+        aspect-ratio: 16 / 9;
+      }
+      #controls {
+        margin-top: 20px;
+        display: flex;
+        gap: 15px;
+      }
+      button {
+        padding: 10px 20px;
+        font-size: 16px;
+        cursor: pointer;
+        border: none;
+        border-radius: 5px;
+        background-color: #4caf50;
+        color: white;
+        transition: background-color 0.3s;
+      }
+      button:hover {
+        background-color: #45a049;
+      }
+      button:disabled {
+        background-color: #555;
+        cursor: not-allowed;
+      }
+      #status {
+        margin-top: 15px;
+        font-size: 14px;
+        color: #aaa;
+        height: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>WebCodecs 10-Bit Depth Map Decoder</h1>
+    <div id="video-container">
+      <canvas id="canvas"></canvas>
+    </div>
+    <div id="controls">
+      <button id="startButton">디코딩 시작</button>
+    </div>
+    <div id="status">상태: 대기 중</div>
+
+    <script>
+      // --- 실행 방법 ---
+      // 1. Python 스크립트를 실행하여 'depth_video.h265' 파일을 생성합니다.
+      // 2. 이 HTML 파일이 있는 디렉토리에서 간단한 웹 서버를 실행합니다.
+      //    (터미널에서 'python -m http.server' 또는 'npx http-server' 실행)
+      // 3. WebCodecs를 지원하는 브라우저(Chrome, Edge 등)에서 웹 서버 주소로 접속합니다.
+      // 4. '디코딩 시작' 버튼을 클릭합니다.
+
+      const startButton = document.getElementById('startButton');
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+      const statusEl = document.getElementById('status');
+      const videoFile = 'depth_video.h265';
+
+      // H.265(HEVC) 비트스트림에서 NAL 유닛을 분리하는 함수
+      function* nalUnitSplitter(data) {
+        const startCode = new Uint8Array([0, 0, 0, 1]);
+        let lastPos = 0;
+        let pos = 0;
+
+        while ((pos = findStartCode(data, pos)) !== -1) {
+          if (lastPos !== 0) {
+            yield data.subarray(lastPos, pos);
+          }
+          lastPos = pos;
+          pos += startCode.length;
+        }
+        if (lastPos < data.length) {
+          yield data.subarray(lastPos);
+        }
+      }
+
+      function findStartCode(data, offset) {
+        for (let i = offset; i < data.length - 3; i++) {
+          if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1) {
+            return i;
+          }
+          // 3-byte start code
+          if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+            return i;
+          }
+        }
+        return -1;
+      }
+
+      startButton.addEventListener('click', async () => {
+        if (typeof VideoDecoder === 'undefined') {
+          statusEl.textContent = '오류: 이 브라우저는 WebCodecs를 지원하지 않습니다.';
+          return;
+        }
+
+        startButton.disabled = true;
+        statusEl.textContent = '상태: 비디오 파일 로딩 중...';
+
+        try {
+          const response = await fetch(videoFile);
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const videoData = new Uint8Array(await response.arrayBuffer());
+          statusEl.textContent = '상태: 로딩 완료. 디코딩을 시작합니다.';
+
+          let frameCount = 0;
+
+          const decoder = new VideoDecoder({
+            output: frame => {
+              // 디코딩된 프레임을 캔버스에 그립니다.
+              if (canvas.width !== frame.codedWidth || canvas.height !== frame.codedHeight) {
+                canvas.width = frame.codedWidth;
+                canvas.height = frame.codedHeight;
+              }
+              ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+              frame.close(); // 메모리 해제를 위해 프레임을 닫아줍니다.
+              frameCount++;
+              statusEl.textContent = `상태: ${frameCount} 프레임 디코딩 완료`;
+            },
+            error: e => {
+              console.error('디코더 오류:', e);
+              statusEl.textContent = `오류: ${e.message}`;
+            },
+          });
+
+          // 디코더 설정
+          // codec: 'hvc1'은 HEVC를 의미합니다.
+          // Python 코드에서 Main10 프로파일을 사용했으므로, 브라우저가 이를 처리할 수 있어야 합니다.
+          // description을 통해 VPS/SPS/PPS 파라미터를 전달할 수 있지만,
+          // 많은 경우 비트스트림에 포함된 파라미터를 디코더가 스스로 해석할 수 있습니다.
+          const config = {
+            codec: 'hvc1.2.4.L120.B0', // HEVC, Main10 Profile, Level 4.0
+            optimizeForLatency: true,
+          };
+
+          const support = await VideoDecoder.isConfigSupported(config);
+          if (!support.supported) {
+            statusEl.textContent = '오류: HEVC Main10 프로파일이 지원되지 않습니다.';
+            startButton.disabled = false;
+            return;
+          }
+
+          decoder.configure(config);
+
+          // 비디오 데이터를 NAL 유닛으로 분할하여 디코더에 전달
+          for (const nalUnit of nalUnitSplitter(videoData)) {
+            // VPS (32), SPS (33), PPS (34) NAL 유닛은 키 프레임의 일부로 간주될 수 있습니다.
+            const nalType = (nalUnit[4] >> 1) & 0x3f;
+            const isKeyFrame = nalType >= 16 && nalType <= 23; // IDR, CRA, BLA 등
+
+            const chunk = new EncodedVideoChunk({
+              type: isKeyFrame ? 'key' : 'delta',
+              timestamp: performance.now() * 1000, // 간단한 타임스탬프
+              duration: 16667, // 60fps 기준 약 16.6ms
+              data: nalUnit,
+            });
+            decoder.decode(chunk);
+            // 실제 애플리케이션에서는 프레임 속도에 맞춰 디코딩을 조절해야 합니다.
+            await new Promise(r => setTimeout(r, 16));
+          }
+
+          await decoder.flush();
+          decoder.close();
+          statusEl.textContent = '상태: 디코딩 완료! 총 ' + frameCount + ' 프레임.';
+          startButton.disabled = false;
+        } catch (error) {
+          console.error('디코딩 프로세스 중 오류 발생:', error);
+          statusEl.textContent = `오류: ${error.message}. 콘솔을 확인하세요.`;
+          startButton.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html> -->
