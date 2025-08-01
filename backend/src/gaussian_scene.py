@@ -158,6 +158,20 @@ class GaussianScene:
         self.on_gpu = True
         print("Gaussian data uploaded to GPU.")
 
+    def scale(self, scale_factor: float):
+        """ Gaussian의 위치와 스케일을 조정합니다. """
+        if self.on_gpu:
+            print("Warning: Cannot scale after GPU upload. Scale before upload_to_gpu().")
+            return
+            
+        # 위치 스케일링
+        self.means *= scale_factor
+        
+        # 스케일 로그값 조정 (exp(log_scale) * scale_factor = exp(log_scale + log(scale_factor)))
+        self.scales += np.log(scale_factor)
+        
+        print(f"Applied scale factor {scale_factor} to Gaussian scene.")
+
     def render(self, viewmats, ks, width, height, near, far):
         viewmats = viewmats.cuda()
         ks = ks.cuda()

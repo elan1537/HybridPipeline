@@ -1,0 +1,7 @@
+numpy
+torch
+torchaudio
+websockets
+tqdm
+opencv-python
+bpy
