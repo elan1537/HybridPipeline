@@ -62,7 +62,7 @@ This decouples neural asset logic from the client, enabling scalable and interac
 
 ```bash
 # Clone and install dependencies
-git clone https://github.com/yourname/StreamSplat.git
+git clone https://github.com/elan1537/HybridPipeline.git
 cd StreamSplat/backend
 pip install -r requirements.txt
 
