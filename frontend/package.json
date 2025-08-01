@@ -12,14 +12,18 @@
   "license": "ISC",
   "description": "",
   "devDependencies": {
+    "@types/dat.gui": "^0.7.13",
     "@webgpu/types": "^0.1.57",
-    "prettier": "^3.5.3",
+    "prettier": "3.5.3",
     "typescript": "^5.8.2",
     "vite": "^6.2.2"
   },
   "dependencies": {
     "@mkkellogg/gaussian-splats-3d": "^0.4.7",
+    "@types/dom-webcodecs": "^0.1.15",
     "@types/three": "^0.176.0",
+    "@vitejs/plugin-basic-ssl": "^2.0.0",
+    "dat.gui": "^0.7.9",
     "gsplat": "^1.2.4",
     "lz4-napi": "^2.8.0",
     "lz4-wasm": "^0.9.2",
