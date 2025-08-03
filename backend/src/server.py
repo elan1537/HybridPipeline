@@ -11,6 +11,8 @@ import asyncio, struct, datetime
 import websockets
 import socket
 
+from session import UserSession
+
 # --- 설정 (기존과 동일) ---
 parser = argparse.ArgumentParser()
 parser.add_argument("--near_clip", type=float, default=1.0, help="Near clip")
@@ -42,9 +44,6 @@ img_encoder = nvc.Encoder()
 
 # --- 전역 변수 ---
 scene: Gaussian4DScene = None
-width: int = 0
-height: int = 0
-encoder = None
 
 if SAVE_FRAMES:
     os.makedirs("frames", exist_ok=True)
@@ -85,9 +84,13 @@ def convert_rgb_to_nv12(rgb_frame: torch.Tensor) -> torch.Tensor:
     nv12 = torch.cat([y_plane, uv_plane], dim=0)
     return nv12
 
-async def recv_loop(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue):
+async def recv_loop(session: UserSession):
     """ 클라이언트로부터 메시지(카메라 데이터)를 받아 큐에 넣는 루프 """
-    global width, height
+    ws = session.ws
+    q = session.q
+    width = session.width
+    height = session.height
+
     print(f"Receive loop started for {ws.remote_address}")
     try:
         while True:
@@ -160,13 +163,18 @@ def depth_to_8bit_one_channel(depth: torch.Tensor, alpha: torch.Tensor, near=DEP
 
     return d_uint8
 
-async def render_loop(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue, send_q: asyncio.Queue):
+async def render_loop(session: UserSession):
     """
     장면을 렌더링하고, 컬러와 뎁스를 하나의 프레임으로 합쳐 H.264로 인코딩한 후 전송합니다.
     """
-    global width, height, scene, encoder
-
     from collections import OrderedDict
+
+    ws = session.ws
+    q = session.q
+    send_q = session.send_q
+    encoder = session.encoder
+    width = session.width
+    height = session.height
 
     print(f"Combined H.264 encoding loop started for {ws.remote_address}")
 
@@ -241,13 +249,16 @@ async def render_loop(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue, 
             video_file.close()
 
 
-async def render_loop_jpeg(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue, send_q: asyncio.Queue):
+async def render_loop_jpeg(session: UserSession):
     """
     장면을 렌더링하고, 컬러와 뎁스를 하나의 프레임으로 합쳐 H.264로 인코딩한 후 전송합니다.
     """
-    global width, height, scene, encoder
-
-    from collections import OrderedDict
+    ws = session.ws
+    q = session.q
+    send_q = session.send_q
+    encoder = session.encoder
+    width = session.width
+    height = session.height
 
     print(f"Combined JPEG loop started for {ws.remote_address}")
 
@@ -311,12 +322,15 @@ async def render_loop_jpeg(ws: websockets.WebSocketServerProtocol, q: asyncio.Qu
         print(f"Combined JPEG loop finished for {ws.remote_address}")
 
 
-async def send_loop(ws: websockets.WebSocketServerProtocol, send_q: asyncio.Queue):
+async def send_loop(session: UserSession):
     """ 전송 전용 루프 """
 
     target_fps = 60
     frame_interval = 1 / target_fps
     last_send = time.perf_counter()
+
+    ws = session.ws
+    send_q = session.send_q
 
     try:
         while True:
@@ -338,43 +352,23 @@ async def send_loop(ws: websockets.WebSocketServerProtocol, send_q: asyncio.Queu
 
 async def handler(ws: websockets.WebSocketServerProtocol):
     """ WebSocket 연결 핸들러 """
-    global width, height, encoder
     remote_addr = ws.remote_address
     print(f"Connection opened from {remote_addr}")
+    session = None
 
     try:
         handshake = await ws.recv()
         if isinstance(handshake, bytes) and len(handshake) == 4:
             W, H = struct.unpack("<HH", handshake)
-            width, height = W, H
-            print(f"[+] Peer {remote_addr} => {W}x{H}")
+            session = UserSession(ws, W, H)
+            print(f"[+] Session created for {remote_addr} => {W}x{H}")
         else:
             await ws.close()
             return
-
-        # ✨ 인코더 생성 시 fmt를 'NV12'로, 높이는 합쳐진 높이로 설정
-        combined_height = height * 2
-        encoder_params = {
-            "codec": "h264", 
-            "preset": "P3",
-            "repeatspspps": 1,
-            "bitrate": 20000000,
-            # "tuning_info": "lossless",
-            "constqp": 0,
-            "gop": 1,
-            "fps": 60,
-        }
-        encoder = nvvc.CreateEncoder(
-            width=width, height=combined_height, fmt="NV12", usecpuinputbuffer=False, **encoder_params
-        )
-        print("✅ Combined frame encoder created with NV12 input format.")
-
-        q = asyncio.Queue(maxsize=1)
-        send_q = asyncio.Queue(maxsize=5)
-
-        recv_task = asyncio.create_task(recv_loop(ws, q))
-        render_task = asyncio.create_task(render_loop(ws, q, send_q))
-        send_task = asyncio.create_task(send_loop(ws, send_q))
+        
+        recv_task = asyncio.create_task(recv_loop(session))
+        render_task = asyncio.create_task(render_loop(session))
+        send_task = asyncio.create_task(send_loop(session))
 
         done, pending = await asyncio.wait(
             [recv_task, render_task, send_task], return_when=asyncio.FIRST_COMPLETED
