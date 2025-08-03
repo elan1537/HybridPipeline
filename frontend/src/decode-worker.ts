@@ -1,10 +1,11 @@
 let videoDecoder: VideoDecoder
 let ws: WebSocket
+let decoderInitialized = false;
 
 let rtWidth = 1920
 let rtHeight = 1080
 
-const rgbaTemp = new Uint8Array(rtWidth * rtHeight * 4)
+let rgbaTemp: Uint8Array
 
 let decodeCnt = 0
 let renderCnt = 0
@@ -48,7 +49,6 @@ self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMes
             break
     }
 }
-
 
 function parseMessage(data: ArrayBuffer) {
     const dv = new DataView(data)
@@ -103,37 +103,66 @@ function updateCamera(data: CameraMessage) {
     ws.send(finalBuffer);
 }
 
-async function init({ width, height, wsURL }: InitMessage) {
-    rtWidth = width
-    rtHeight = height
+async function initDecoder() {
+    if (decoderInitialized) return;
 
-    videoDecoder = new VideoDecoder({
-        output: handleFrame,
-        error: e => console.error('Decoder error', e)
-    });
-    const config: VideoDecoderConfig = {
-        codec: 'avc1.42E01E',
-        codedWidth: rtWidth,
-        codedHeight: rtHeight * 2
-    };
-    const { supported } = await VideoDecoder.isConfigSupported(config);
-    if (!supported) throw new Error('VideoDecoder config unsupported');
-    videoDecoder.configure(config);
+    console.log("initDecoder")
+    try {
+        videoDecoder = new VideoDecoder({
+            output: handleFrame,
+            error: e => {
+                console.error('Decoder error', e)
+                decoderInitialized = false;
+                // 에러 발생 시 디코더를 닫고 재시도 준비
+                if (videoDecoder && videoDecoder.state !== 'closed') {
+                    videoDecoder.close();
+                }
+            }
+        });
 
-    // 3-3. WebSocket
+        const config: VideoDecoderConfig = {
+            codec: 'avc1.42E01E',
+            codedWidth: rtWidth,
+            codedHeight: rtHeight * 2
+        };
+
+        const { supported } = await VideoDecoder.isConfigSupported(config);
+        if (!supported) {
+            console.error('VideoDecoder config unsupported');
+            return;
+        }
+
+        videoDecoder.configure(config);
+        decoderInitialized = true;
+        console.log("Decoder initialized successfully");
+
+    } catch (error) {
+        console.error('Failed to initialize decoder:', error);
+        decoderInitialized = false;
+    }
+}
+
+async function initWebSocket(wsURL: string) {
+    console.log("initWebSocket")
     console.log("URL: ", wsURL)
     ws = new WebSocket(wsURL);
     console.log("WS: ", ws)
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
         console.log('[MediaWorker] WS opened')
+        self.postMessage({ type: 'ws-ready' })
         const buf = new ArrayBuffer(4);
         new DataView(buf).setUint16(0, rtWidth, true);
         new DataView(buf).setUint16(2, rtHeight, true);
         ws.send(buf);
     }
-    ws.onmessage = e => {
+    ws.onmessage = async e => {
         const arrBuf = e.data as ArrayBuffer;
+
+        if (!decoderInitialized) {
+            await initDecoder();
+        }
+
         const chunk = new EncodedVideoChunk({
             type: 'key',
             timestamp: performance.now(),
@@ -145,21 +174,50 @@ async function init({ width, height, wsURL }: InitMessage) {
     ws.onclose = e => console.log('WS closed', e.code);
 }
 
+async function init({ width, height, wsURL }: InitMessage) {
+    rtWidth = width
+    rtHeight = height
+
+    rgbaTemp = new Uint8Array(rtWidth * rtHeight * 4)
+
+    await initWebSocket(wsURL)
+}
+
 async function handleFrame(frame: VideoFrame) {
     decodeCnt++;
 
     const w = frame.codedWidth
     const h = frame.codedHeight / 2;
 
+    // 크기 검증
+    if (w <= 0 || h <= 0) {
+        console.error('Invalid frame dimensions:', w, h);
+        frame.close();
+        return;
+    }
+
+    // rgbaTemp 크기 확인 및 필요시 재할당
+    const requiredSize = w * h * 4;
+    if (!rgbaTemp || rgbaTemp.length < requiredSize) {
+        console.log('Resizing rgbaTemp from', rgbaTemp?.length, 'to', requiredSize);
+        rgbaTemp = new Uint8Array(requiredSize);
+    }
+
     const colorBmp = await createImageBitmap(frame, 0, 0, w, h)
 
-    await frame.copyTo(rgbaTemp, {
-        rect: { x: 0, y: h, width: w, height: h },
-        format: 'RGBA',
-        layout: [{ offset: 0, stride: w * 4 }]
-    })
+    try {
+        await frame.copyTo(rgbaTemp, {
+            rect: { x: 0, y: h, width: w, height: h },
+            format: 'RGBA',
+            layout: [{ offset: 0, stride: w * 4 }]
+        })
+    } catch (error) {
+        console.error('frame.copyTo error:', error);
+        frame.close();
+        return;
+    }
 
-    const depthBuffer = new Uint8Array(rtWidth * rtHeight)
+    const depthBuffer = new Uint8Array(w * h)
     for (let i = 0, j = 0; i < w * h; ++i, j += 4) depthBuffer[i] = rgbaTemp[j];
     frame.close()
 
@@ -180,6 +238,11 @@ async function handleFrame(frame: VideoFrame) {
 }
 
 function decodeChunk(arrayBuf: ArrayBuffer) {
+    if (!decoderInitialized) {
+        console.warn('Decoder not initialized, skipping chunk');
+        return;
+    }
+
     const chunk = new EncodedVideoChunk({
         type: 'key',
         timestamp: performance.now(),

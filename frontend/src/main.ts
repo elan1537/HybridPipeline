@@ -10,6 +10,8 @@ import debugFragmentShader from './shaders/debugColorShader.fs?raw';
 
 const rtWidth = 1920;
 const rtHeight = 1080;
+let lastCameraUpdateTime = 0
+const cameraUpdateInterval = 16
 
 
 let camera: THREE.PerspectiveCamera
@@ -58,6 +60,8 @@ interface CameraBuffer {
 }
 
 let worker = new Worker(new URL("./decode-worker.ts", import.meta.url), { type: "module" })
+let workerReady = false;
+
 worker.postMessage({
     type: 'init',
     canvas: depthCanvas,
@@ -66,9 +70,28 @@ worker.postMessage({
     wsURL: 'wss://' + location.host + '/ws'
 }, [depthCanvas])
 
+worker.onmessage = ({ data }) => {
+    if (data.type === "ws-ready") {
+        workerReady = true;
+        return;
+    }
 
+    if (data.type === 'frame') {
+        wsColorTexture.image = data.image;
+        wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace;
+        wsDepthTexture.image.data = data.depth
+
+        wsColorTexture.needsUpdate = true;
+        wsDepthTexture.needsUpdate = true;
+    }
+
+    if (data.type === 'fps') {
+        fpsDiv.textContent = `Decode FPS: ${data.decode.toFixed(2)}`
+    }
+}
 
 async function initScene() {
+    console.log("initScene")
     camera = new THREE.PerspectiveCamera(fov, rtWidth / rtHeight, near, far);
 
     camera.position.copy(
@@ -172,22 +195,9 @@ async function initScene() {
 }
 
 
-worker.onmessage = ({ data }) => {
-    if (data.type === 'frame') {
-        wsColorTexture.image = data.image;
-        wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace;
-        wsDepthTexture.image.data = data.depth
-
-        wsColorTexture.needsUpdate = true;
-        wsDepthTexture.needsUpdate = true;
-    }
-
-    if (data.type === 'fps') {
-        fpsDiv.textContent = `Decode FPS: ${data.decode.toFixed(2)}`
-    }
-}
-
 function sendCameraSnapshot(tag?: string) {
+    if (!workerReady) return;
+
     const projectionMatrix = camera.projectionMatrix.clone().toArray()
     const intrinsics = getCameraIntrinsics(camera, rtWidth, rtHeight);
     const camBuf: CameraBuffer = {
@@ -224,7 +234,10 @@ function renderLoop() {
         renderStart = now
     }
 
-    sendCameraSnapshot('render');
+    if (now - lastCameraUpdateTime > cameraUpdateInterval) {
+        sendCameraSnapshot('render');
+        lastCameraUpdateTime = now;
+    }
     // robot_animation();
 
     renderCnt++;

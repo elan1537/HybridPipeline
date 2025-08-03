@@ -34,7 +34,6 @@ import ws_handler
 import PyNvVideoCodec as nvvc
 
 PLY_PATH = args.ply_path
-# PLY_PATH = "./livinglab-no-ur5.ply"
 WEBSOCKET_PORT = 8765
 SAVE_FRAMES = True
 
@@ -93,29 +92,30 @@ async def recv_loop(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue):
     try:
         while True:
             raw_with_ts = await ws.recv()
-            if isinstance(raw_with_ts, bytes):
-                if len(raw_with_ts) == 4:
-                    W, H = struct.unpack("<HH", raw_with_ts)
-                    if width != W or height != H:
-                        print(f"[+] Peer {ws.remote_address} resized to {W}x{H}")
-                        width, height = W, H
-                        while not q.empty():
-                            try:
-                                q.get_nowait()
-                                q.task_done()
-                            except asyncio.QueueEmpty:
-                                break
-                elif len(raw_with_ts) >= (32 * 4 + 8):
-                    server_recv_timestamp_ms = time.time() * 1000
-                    client_send_timestamp_ms = struct.unpack_from("<d", raw_with_ts, len(raw_with_ts) - 8)[0]
-                    actual_payload = raw_with_ts[:-8]
-                    if q.full():
+
+            if len(raw_with_ts) == 4:
+                W, H = struct.unpack("<HH", raw_with_ts)
+                if width != W or height != H:
+                    print(f"[+] Peer {ws.remote_address} resized to {W}x{H}")
+                    width, height = W, H
+                    while not q.empty():
                         try:
                             q.get_nowait()
                             q.task_done()
                         except asyncio.QueueEmpty:
-                            pass
-                    await q.put((actual_payload, client_send_timestamp_ms, server_recv_timestamp_ms))
+                            break
+            elif len(raw_with_ts) >= (32 * 4 + 8):
+                server_recv_timestamp_ms = time.time() * 1000
+                client_send_timestamp_ms = struct.unpack_from("<d", raw_with_ts, len(raw_with_ts) - 8)[0]
+                actual_payload = raw_with_ts[:-8]
+                if q.full():
+                    try:
+                        q.get_nowait()
+                        q.task_done()
+                    except asyncio.QueueEmpty:
+                        pass
+                await q.put((actual_payload, client_send_timestamp_ms, server_recv_timestamp_ms))
+                
     except websockets.exceptions.ConnectionClosed:
         print(f"Connection closed for {ws.remote_address}")
     finally:
@@ -223,7 +223,7 @@ async def render_loop(ws: websockets.WebSocketServerProtocol, q: asyncio.Queue, 
                                  client_send_timestamp_ms, server_recv_timestamp_ms, server_process_end_timestamp_ms)
 
             await send_q.put((header, video_bitstream, frame_count))
-            # print(f"{frame_count}: {((server_process_end_timestamp_ms - client_send_timestamp_ms) / 1000):.2f}ms")
+            print(f"{frame_count}: {((server_process_end_timestamp_ms - client_send_timestamp_ms) / 1000):.2f}ms")
 
             frame_count += 1
             q.task_done()
@@ -369,7 +369,7 @@ async def handler(ws: websockets.WebSocketServerProtocol):
         )
         print("✅ Combined frame encoder created with NV12 input format.")
 
-        q = asyncio.Queue(maxsize=2)
+        q = asyncio.Queue(maxsize=1)
         send_q = asyncio.Queue(maxsize=5)
 
         recv_task = asyncio.create_task(recv_loop(ws, q))
