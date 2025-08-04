@@ -10,8 +10,9 @@ import debugFragmentShader from './shaders/debugColorShader.fs?raw';
 
 const rtWidth = 1920;
 const rtHeight = 1080;
+
 let lastCameraUpdateTime = 0
-const cameraUpdateInterval = 16
+const cameraUpdateInterval = 1 / 60
 
 
 let camera: THREE.PerspectiveCamera
@@ -87,6 +88,10 @@ worker.onmessage = ({ data }) => {
 
     if (data.type === 'fps') {
         fpsDiv.textContent = `Decode FPS: ${data.decode.toFixed(2)}`
+    }
+
+    if (data.type === 'error') {
+        console.error("decode-worker error: ", data.error)
     }
 }
 

@@ -107,11 +107,24 @@ async function initDecoder() {
     if (decoderInitialized) return;
 
     console.log("initDecoder")
+
+    // Safari 호환성 체크
+    if (typeof VideoDecoder === 'undefined') {
+        console.error('VideoDecoder API not supported in this browser');
+        return;
+    }
+
     try {
         videoDecoder = new VideoDecoder({
             output: handleFrame,
             error: e => {
                 console.error('Decoder error', e)
+                console.error('Decoder state:', videoDecoder?.state)
+                console.error('Decoder config:', {
+                    codec: 'avc1.42E01E',
+                    codedWidth: rtWidth,
+                    codedHeight: rtHeight * 2
+                })
                 decoderInitialized = false;
                 // 에러 발생 시 디코더를 닫고 재시도 준비
                 if (videoDecoder && videoDecoder.state !== 'closed') {
@@ -123,7 +136,7 @@ async function initDecoder() {
         const config: VideoDecoderConfig = {
             codec: 'avc1.42E01E',
             codedWidth: rtWidth,
-            codedHeight: rtHeight * 2
+            codedHeight: rtHeight * 2,
         };
 
         const { supported } = await VideoDecoder.isConfigSupported(config);
@@ -181,6 +194,17 @@ async function init({ width, height, wsURL }: InitMessage) {
     rgbaTemp = new Uint8Array(rtWidth * rtHeight * 4)
 
     await initWebSocket(wsURL)
+
+}
+
+async function splitFrameCanvas(frame: VideoFrame, w: number, h: number) {
+    const full = await createImageBitmap(frame);   // 1280×1440
+    const [cCan, dCan] = [new OffscreenCanvas(w, h), new OffscreenCanvas(w, h)];
+
+    cCan.getContext('2d')!.drawImage(full, 0, 0, w, h, 0, 0, w, h);
+    dCan.getContext('2d')!.drawImage(full, 0, h, w, h, 0, 0, w, h);
+
+    return Promise.all([createImageBitmap(cCan), createImageBitmap(dCan)]);
 }
 
 async function handleFrame(frame: VideoFrame) {
@@ -189,43 +213,15 @@ async function handleFrame(frame: VideoFrame) {
     const w = frame.codedWidth
     const h = frame.codedHeight / 2;
 
-    // 크기 검증
-    if (w <= 0 || h <= 0) {
-        console.error('Invalid frame dimensions:', w, h);
-        frame.close();
-        return;
-    }
+    const [colorBitmap, depthBitmap] = await splitFrameCanvas(frame, w, h)
 
-    // rgbaTemp 크기 확인 및 필요시 재할당
-    const requiredSize = w * h * 4;
-    if (!rgbaTemp || rgbaTemp.length < requiredSize) {
-        console.log('Resizing rgbaTemp from', rgbaTemp?.length, 'to', requiredSize);
-        rgbaTemp = new Uint8Array(requiredSize);
-    }
-
-    const colorBmp = await createImageBitmap(frame, 0, 0, w, h)
-
-    try {
-        await frame.copyTo(rgbaTemp, {
-            rect: { x: 0, y: h, width: w, height: h },
-            format: 'RGBA',
-            layout: [{ offset: 0, stride: w * 4 }]
-        })
-    } catch (error) {
-        console.error('frame.copyTo error:', error);
-        frame.close();
-        return;
-    }
-
-    const depthBuffer = new Uint8Array(w * h)
-    for (let i = 0, j = 0; i < w * h; ++i, j += 4) depthBuffer[i] = rgbaTemp[j];
     frame.close()
 
     self.postMessage({
         type: 'frame',
-        image: colorBmp,
-        depth: depthBuffer,
-    }, [colorBmp, depthBuffer.buffer])
+        image: colorBitmap,
+        depth: depthBitmap,
+    })
 
     const now = performance.now()
 
