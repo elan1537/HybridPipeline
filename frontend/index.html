@@ -22,8 +22,20 @@
       font-size: 14px;
       line-height: 1.2;
       z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
   ">
     <div id="decode-fps">Decode FPS: --</div>
     <div id="render-fps">Render FPS: --</div>
+    <div id="jpeg-fallback-option">
+      <input type="checkbox" id="jpeg-fallback-checkbox">
+      <label for="jpeg-fallback-checkbox">JPEG Fallback</label>
+    </div>
+    <div id="ws-state-console">
+      <div id="ws-state-console-text">WS State: --</div>
+      <input type="button" id="ws-connect-button" value="Connect">
+      <input type="button" id="ws-disconnect-button" value="Disconnect">
+    </div>
   </body>
 </html>
