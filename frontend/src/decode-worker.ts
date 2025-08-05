@@ -11,6 +11,8 @@ let decodeCnt = 0
 let renderCnt = 0
 let decodeStart = performance.now()
 let renderStart = performance.now()
+let jpegFallback = false
+
 
 interface InitMessage {
     type: 'init'
@@ -33,7 +35,16 @@ interface CameraMessage {
     projection: Float32Array
 }
 
-self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage>) => {
+interface ConnectionMessage {
+    type: 'change'
+    wsURL: string
+}
+
+interface CloseMessage {
+    type: 'ws-close'
+}
+
+self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage>) => {
     const data = evt.data
 
     switch (data.type) {
@@ -47,10 +58,19 @@ self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMes
         case 'camera':
             updateCamera(data)
             break
+        case 'change':
+            ws.close(1000, "Connection changed")
+            jpegFallback = !jpegFallback
+            await initWebSocket(data.wsURL)
+            break
+        case 'ws-close':
+            ws.close(1000, "Connection closed")
+            self.postMessage({ type: 'ws-close' })
+            break
     }
 }
 
-function parseMessage(data: ArrayBuffer) {
+function parseH264Message(data: ArrayBuffer) {
     const dv = new DataView(data)
     const HEADER_SIZE = 4 + 8 + 8 + 8;
     if (data.byteLength < HEADER_SIZE) return null;
@@ -62,6 +82,32 @@ function parseMessage(data: ArrayBuffer) {
 
     return {
         videoData: data.slice(videoStart, videoStart + videoLen)
+    }
+}
+
+function parseJPEGMessage(data: ArrayBuffer): { jpegData: ArrayBuffer, depthData: ArrayBuffer } | null {
+    const dv = new DataView(data)
+    const HEADER_SIZE = 4 + 4 + 8 + 8 + 8; // IIddd format: jpeg_len + depth_len + 3 timestamps
+
+    if (data.byteLength < HEADER_SIZE) {
+        console.error(`JPEG message too short: ${data.byteLength} < ${HEADER_SIZE}`)
+        return null;
+    }
+
+    const jpegLen = dv.getUint32(0, true)
+    const depthLen = dv.getUint32(4, true)
+    const jpegStart = HEADER_SIZE
+
+    // console.log(`Parsing JPEG message: jpegLen=${jpegLen}, depthLen=${depthLen}, totalSize=${data.byteLength}`)
+
+    if (data.byteLength < jpegStart + jpegLen + depthLen) {
+        console.error(`JPEG message incomplete: expected ${jpegStart + jpegLen + depthLen}, got ${data.byteLength}`)
+        return null;
+    }
+
+    return {
+        jpegData: data.slice(jpegStart, jpegStart + jpegLen),
+        depthData: data.slice(jpegStart + jpegLen, jpegStart + jpegLen + depthLen)
     }
 }
 
@@ -172,19 +218,61 @@ async function initWebSocket(wsURL: string) {
     ws.onmessage = async e => {
         const arrBuf = e.data as ArrayBuffer;
 
-        if (!decoderInitialized) {
-            await initDecoder();
-        }
+        if (jpegFallback) {
+            // console.log("Processing JPEG fallback message")
+            const { jpegData, depthData } = parseJPEGMessage(arrBuf)
 
-        const chunk = new EncodedVideoChunk({
-            type: 'key',
-            timestamp: performance.now(),
-            data: arrBuf
-        });
-        videoDecoder.decode(chunk);
+            if (!jpegData || !depthData) {
+                console.error("Failed to parse JPEG message")
+                return
+            }
+
+            // console.log(`JPEG data: ${jpegData.byteLength} bytes, Depth data: ${depthData.byteLength} bytes`)
+            const colorBitmap = await createImageBitmap(new Blob([jpegData], { type: 'image/jpeg' }))
+
+            // Use raw 16-bit depth data directly (already in [0,1] range)
+            const depthFloat16 = new Uint16Array(depthData)
+
+            // console.log(`Received ${depthFloat16.length} depth values as float16 [0,1] range`)
+
+            // Increment frame count for FPS calculation
+            decodeCnt++
+
+            self.postMessage({
+                type: 'frame',
+                image: colorBitmap,
+                depth: depthFloat16,
+            })
+
+            const now = performance.now()
+
+            if (now - decodeStart > 1000) {
+                const fps = decodeCnt / ((now - decodeStart) / 1000)
+                self.postMessage({ type: 'fps', decode: fps })
+                decodeCnt = 0
+                decodeStart = now
+            }
+        } else {
+            // console.log("VideoDecoder Enable")
+            if (!decoderInitialized) {
+                await initDecoder();
+            }
+            const chunk = new EncodedVideoChunk({
+                type: 'key',
+                timestamp: performance.now(),
+                data: arrBuf
+            });
+            videoDecoder.decode(chunk);
+        }
     };
-    ws.onerror = e => console.error('WS error', e);
-    ws.onclose = e => console.log('WS closed', e.code);
+    ws.onerror = e => {
+        console.error('WS error', e)
+        self.postMessage({ type: 'ws-error' })
+    }
+    ws.onclose = e => {
+        console.log('WS closed', e.code)
+        self.postMessage({ type: 'ws-close' })
+    }
 }
 
 async function init({ width, height, wsURL }: InitMessage) {

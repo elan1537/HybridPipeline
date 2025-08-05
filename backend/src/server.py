@@ -39,14 +39,12 @@ PLY_PATH = args.ply_path
 WEBSOCKET_PORT = 8765
 SAVE_FRAMES = True
 
-params = nvc.EncodeParams(quality=90)
-img_encoder = nvc.Encoder()
-
 # --- 전역 변수 ---
 scene: Gaussian4DScene = None
 
 if SAVE_FRAMES:
     os.makedirs("frames", exist_ok=True)
+
 
 def convert_rgb_to_nv12(rgb_frame: torch.Tensor) -> torch.Tensor:
     """
@@ -83,6 +81,7 @@ def convert_rgb_to_nv12(rgb_frame: torch.Tensor) -> torch.Tensor:
     # NV12 포맷으로 연결
     nv12 = torch.cat([y_plane, uv_plane], dim=0)
     return nv12
+
 
 async def recv_loop(session: UserSession):
     """ 클라이언트로부터 메시지(카메라 데이터)를 받아 큐에 넣는 루프 """
@@ -130,7 +129,8 @@ def vis_depth(tensor_data: torch.Tensor, filename: str):
         nv_img = nvc.as_image(tensor_data)
         encoded = img_encoder.encode(nv_img, ".jpeg", params=nvc.EncodeParams(quality=95))
         f.write(encoded)
-        
+
+
 def depth_to_8bit_one_channel(depth: torch.Tensor, alpha: torch.Tensor, near=DEPTH_NEAR_CLIP, far=DEPTH_FAR_CLIP) -> torch.Tensor:
     def log_depth(depth: torch.Tensor, alpha: torch.Tensor, near=DEPTH_NEAR_CLIP, far=DEPTH_FAR_CLIP) -> torch.Tensor:
         depth[alpha < 0.08] = far
@@ -162,6 +162,7 @@ def depth_to_8bit_one_channel(depth: torch.Tensor, alpha: torch.Tensor, near=DEP
     # vis_depth(d_uint8, "normalized_log_depth.jpg")
 
     return d_uint8
+
 
 async def render_loop(session: UserSession):
     """
@@ -262,6 +263,9 @@ async def render_loop_jpeg(session: UserSession):
 
     print(f"Combined JPEG loop started for {ws.remote_address}")
 
+    params = nvc.EncodeParams(quality=90)
+    img_encoder = nvc.Encoder()
+
     frame_count = 0
     try:
         while True:
@@ -283,24 +287,15 @@ async def render_loop_jpeg(session: UserSession):
             alpha_cuda = render_alphas[0, ..., 0].float()
 
             img_nv = nvc.as_image(rgb_cuda)
-            jpeg_bytes = encoder.encode(img_nv, "jpeg", params=nvc.EncodeParams(quality=100))
+            jpeg_bytes = img_encoder.encode(img_nv, "jpeg", params=params)
 
-            ALPHA_CUTOFF = 0.1  # 알파 값 임계치
-            depth_cuda_raw[alpha_cuda < ALPHA_CUTOFF] = torch.nan  # 알파 낮은 부분 NaN 처리
+            # Use same [0,1] normalization as H264 path for consistency
+            processed_depth_01 = depth_to_8bit_one_channel(depth_cuda_raw, alpha_cuda)
+            # Convert back to [0,1] float range instead of 8-bit
+            depth_01_normalized = processed_depth_01.float() / 255.0
 
-            term_A = (DEPTH_FAR_CLIP + DEPTH_NEAR_CLIP) / (DEPTH_FAR_CLIP - DEPTH_NEAR_CLIP)
-            term_B_num = 2 * DEPTH_FAR_CLIP * DEPTH_NEAR_CLIP
-            term_B_den_factor = (DEPTH_FAR_CLIP - DEPTH_NEAR_CLIP)
-
-            denominator_term_B = term_B_den_factor * depth_cuda_raw
-                
-            calculated_ndc_webgl = term_A - (term_B_num / denominator_term_B)
-
-            final_ndc_webgl = torch.clamp(calculated_ndc_webgl, -1.0, 1.0)
-            final_ndc_to_send = final_ndc_webgl
-
-            depth_ndc_f16 = final_ndc_to_send.to(torch.float16) 
-            depth_numpy = depth_ndc_f16.contiguous().cpu().numpy()
+            depth_01_f16 = depth_01_normalized.to(torch.float16) 
+            depth_numpy = depth_01_f16.contiguous().cpu().numpy()
             depth_bytes = depth_numpy.tobytes()
 
             server_process_end_timestamp_ms = time.perf_counter() * 1000 - start_time
@@ -350,36 +345,50 @@ async def send_loop(session: UserSession):
     except Exception as e:
         print(f"Error in send loop: {e}")
 
+
 async def handler(ws: websockets.WebSocketServerProtocol):
     """ WebSocket 연결 핸들러 """
     remote_addr = ws.remote_address
+    
     print(f"Connection opened from {remote_addr}")
     session = None
 
     try:
         handshake = await ws.recv()
         if isinstance(handshake, bytes) and len(handshake) == 4:
-            W, H = struct.unpack("<HH", handshake)
-            session = UserSession(ws, W, H)
-            print(f"[+] Session created for {remote_addr} => {W}x{H}")
+            width, height = struct.unpack("<HH", handshake)
+            session = UserSession(ws, width, height)
+            print(f"[+] Session created for {remote_addr} => {width}x{height}")
         else:
             await ws.close()
             return
-        
+
         recv_task = asyncio.create_task(recv_loop(session))
-        render_task = asyncio.create_task(render_loop(session))
         send_task = asyncio.create_task(send_loop(session))
+
+        print(ws.request.path)
+
+        match ws.request.path:
+            case "/ws/h264":
+                render_task = asyncio.create_task(render_loop(session))
+                print(f"[+] H.264 loop started for {remote_addr}")
+            case "/ws/jpeg":
+                render_task = asyncio.create_task(render_loop_jpeg(session))
+                print(f"[+] JPEG loop started for {remote_addr}")
+            case _:
+                await ws.close()
 
         done, pending = await asyncio.wait(
             [recv_task, render_task, send_task], return_when=asyncio.FIRST_COMPLETED
         )
         for task in pending:
             task.cancel()
-
+        
     except Exception as e:
         print(f"Handler error for {remote_addr}: {e}")
     finally:
         print(f"Connection handler finished for {remote_addr}")
+
 
 async def main():
     global scene
@@ -396,6 +405,7 @@ async def main():
     async with websockets.serve(handler, "0.0.0.0", WEBSOCKET_PORT, max_size=None, ping_interval=None, ping_timeout=None):
         print(f"WebSocket server listening on ws://0.0.0.0:{WEBSOCKET_PORT}")
         await asyncio.Future()
+
 
 if __name__ == "__main__":
     torch.cuda.init()
