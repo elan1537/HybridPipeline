@@ -38,11 +38,35 @@ let debugMaterial: THREE.ShaderMaterial;
 let debugScene: THREE.Scene;
 let debugCamera: THREE.OrthographicCamera;
 
-const depthCanvas = new OffscreenCanvas(rtWidth, rtHeight);
-
 const clock = new THREE.Clock();
 const fpsDiv = document.getElementById('decode-fps') as HTMLDivElement;
 const renderFpsDiv = document.getElementById('render-fps') as HTMLDivElement;
+const jpegFallbackCheckbox = document.getElementById('jpeg-fallback-checkbox') as HTMLInputElement;
+const wsConnectButton = document.getElementById('ws-connect-button') as HTMLInputElement;
+const wsDisconnectButton = document.getElementById('ws-disconnect-button') as HTMLInputElement;
+const wsStateConsoleText = document.getElementById('ws-state-console-text') as HTMLDivElement;
+
+wsConnectButton.addEventListener('click', () => wsConnectButtonClick())
+wsDisconnectButton.addEventListener('click', () => wsDisconnectButtonClick())
+
+function recreateDepthTexture(isJpegMode: boolean) {
+    wsDepthTexture.dispose()
+
+    if (isJpegMode) {
+        // JPEG mode: Float16 data in Uint16Array format
+        wsDepthTexture = new THREE.DataTexture(new Uint16Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.HalfFloatType);
+    } else {
+        // H264 mode: 8-bit RGB ImageBitmap data
+        wsDepthTexture = new THREE.DataTexture(new Uint8Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.UnsignedByteType);
+    }
+
+    // Update shader uniforms with new texture
+    fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+    debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+
+    console.log(`Recreated depth texture for ${isJpegMode ? 'JPEG' : 'H264'} mode`);
+}
+jpegFallbackCheckbox.addEventListener('click', () => jpegFallbackButtonClick())
 
 let near = 0.3;
 let far = 100
@@ -63,25 +87,49 @@ interface CameraBuffer {
 let worker = new Worker(new URL("./decode-worker.ts", import.meta.url), { type: "module" })
 let workerReady = false;
 
-worker.postMessage({
-    type: 'init',
-    canvas: depthCanvas,
-    width: rtWidth,
-    height: rtHeight,
-    wsURL: 'wss://' + location.host + '/ws'
-}, [depthCanvas])
+if (jpegFallbackCheckbox.checked) {
+    worker.postMessage({
+        type: 'init',
+        width: rtWidth,
+        height: rtHeight,
+        wsURL: 'wss://' + location.host + '/ws/jpeg',
+    })
+} else {
+    worker.postMessage({
+        type: 'init',
+        width: rtWidth,
+        height: rtHeight,
+        wsURL: 'wss://' + location.host + '/ws/h264'
+    })
+}
 
 worker.onmessage = ({ data }) => {
     if (data.type === "ws-ready") {
         workerReady = true;
+        wsStateConsoleText.textContent = "WS State: Connected"
+        return;
+    }
+
+    if (data.type === "ws-error") {
+        workerReady = false;
+        wsStateConsoleText.textContent = "WS State: Error"
+        return;
+    }
+
+    if (data.type === "ws-close") {
+        workerReady = false;
+        wsStateConsoleText.textContent = "WS State: Closed"
         return;
     }
 
     if (data.type === 'frame') {
-        wsColorTexture.image = data.image;
-        wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace;
-        wsDepthTexture.image.data = data.depth
+        // const isJpegMode = jpegFallbackCheckbox.checked;
+        // console.log(`Received frame: image=${data.image}, depth=${data.depth?.constructor.name}, jpegFallback=${isJpegMode}`)
 
+        wsColorTexture.image = data.image;
+        wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace
+
+        wsDepthTexture.image.data = data.depth;
         wsColorTexture.needsUpdate = true;
         wsDepthTexture.needsUpdate = true;
     }
@@ -93,6 +141,41 @@ worker.onmessage = ({ data }) => {
     if (data.type === 'error') {
         console.error("decode-worker error: ", data.error)
     }
+}
+
+function wsConnectButtonClick() {
+    worker.postMessage({
+        type: 'change',
+        wsURL: 'wss://' + location.host + '/ws/h264'
+    })
+}
+
+function wsDisconnectButtonClick() {
+    console.log("wsDisconnectButtonClick")
+    worker.postMessage({
+        type: 'ws-close'
+    })
+
+    wsColorTexture.dispose();
+    wsDepthTexture.dispose();
+
+    wsColorTexture.needsUpdate = true;
+    wsDepthTexture.needsUpdate = true;
+}
+
+function jpegFallbackButtonClick() {
+    const isJpegMode = jpegFallbackCheckbox.checked;
+    console.log(`Switching to ${isJpegMode ? 'JPEG' : 'H264'} mode`)
+
+    // Recreate depth texture for the new mode
+    recreateDepthTexture(isJpegMode);
+
+    // Switch WebSocket connection
+    const wsURL = isJpegMode ? 'wss://' + location.host + '/ws/jpeg' : 'wss://' + location.host + '/ws/h264';
+    worker.postMessage({
+        type: 'change',
+        wsURL: wsURL
+    })
 }
 
 async function initScene() {
@@ -151,9 +234,14 @@ async function initScene() {
     wsColorTexture = new THREE.Texture()
     wsColorTexture.minFilter = THREE.LinearFilter;
     wsColorTexture.magFilter = THREE.LinearFilter;
-    wsColorTexture.colorSpace = THREE.SRGBColorSpace;
+    wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace;
 
-    wsDepthTexture = new THREE.DataTexture(new Uint8Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.UnsignedByteType);
+    const initialIsJpegMode = jpegFallbackCheckbox.checked;
+    if (initialIsJpegMode) {
+        wsDepthTexture = new THREE.DataTexture(new Uint16Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.HalfFloatType);
+    } else {
+        wsDepthTexture = new THREE.DataTexture(new Uint8Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.UnsignedByteType);
+    }
 
     debugMaterial = new THREE.ShaderMaterial({
         uniforms: {
