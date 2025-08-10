@@ -37,5 +37,22 @@
       <input type="button" id="ws-connect-button" value="Connect">
       <input type="button" id="ws-disconnect-button" value="Disconnect">
     </div>
+    
+    <!-- 레이턴시 표시 섹션 -->
+    <div id="latency-display" style="
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #333;
+    ">
+      <div style="color: #ffff00; font-weight: bold; margin-bottom: 4px;">Latency (ms)</div>
+      <div id="total-latency">Total: --</div>
+      <div id="network-latency">Network: --</div>
+      <div id="server-latency">Server: --</div>
+      <div id="decode-latency">Client: --</div>
+      <div id="clock-offset" style="margin-top: 4px; color: #aaaaaa; font-size: 12px;">
+        Clock offset: --
+      </div>
+    </div>
+  </div>
   </body>
 </html>
