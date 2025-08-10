@@ -13,6 +13,17 @@ let decodeStart = performance.now()
 let renderStart = performance.now()
 let jpegFallback = false
 
+// H264 디코딩용 pending frames 추적
+const pendingFrames = new Map<number, {
+    frameId: number,
+    serverTimestamps: {
+        serverReceiveTime: number,
+        serverProcessStartTime: number,
+        serverProcessEndTime: number,
+        serverSendTime: number
+    }
+}>()
+
 
 interface InitMessage {
     type: 'init'
@@ -33,6 +44,7 @@ interface CameraMessage {
     target: Float32Array
     intrinsics: Float32Array
     projection: Float32Array
+    frameId?: number
 }
 
 interface ConnectionMessage {
@@ -44,7 +56,23 @@ interface CloseMessage {
     type: 'ws-close'
 }
 
-self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage>) => {
+interface PingMessage {
+    type: 'ping'
+    clientTime: number
+}
+
+interface LatencyMessage {
+    type: 'latency-update'
+    frameId: number
+    serverTimestamps?: {
+        serverReceiveTime: number
+        serverProcessStartTime: number
+        serverProcessEndTime: number
+        serverSendTime: number
+    }
+}
+
+self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage | PingMessage | LatencyMessage>) => {
     const data = evt.data
 
     switch (data.type) {
@@ -67,27 +95,60 @@ self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMes
             ws.close(1000, "Connection closed")
             self.postMessage({ type: 'ws-close' })
             break
+        case 'ping':
+            sendPing(data.clientTime)
+            break
+        case 'latency-update':
+            // Main thread에서 latency tracker로 전달
+            self.postMessage({ 
+                type: 'latency-update', 
+                frameId: data.frameId,
+                serverTimestamps: data.serverTimestamps
+            })
+            break
     }
 }
 
 function parseH264Message(data: ArrayBuffer) {
     const dv = new DataView(data)
-    const HEADER_SIZE = 4 + 8 + 8 + 8;
+    const HEADER_SIZE = 4 + 4 + 8 + 8 + 8 + 8; // videoLen + frameId + 4 timestamps
     if (data.byteLength < HEADER_SIZE) return null;
 
     const videoLen = dv.getUint32(0, true);
+    const frameId = dv.getUint32(4, true);
+    const clientSendTime = dv.getFloat64(8, true);
+    const serverReceiveTime = dv.getFloat64(16, true);
+    const serverProcessEndTime = dv.getFloat64(24, true);
+    const serverSendTime = dv.getFloat64(32, true);
     const videoStart = HEADER_SIZE;
 
     if (data.byteLength < videoStart + videoLen) return null;
 
     return {
-        videoData: data.slice(videoStart, videoStart + videoLen)
+        frameId,
+        videoData: data.slice(videoStart, videoStart + videoLen),
+        serverTimestamps: {
+            serverReceiveTime,
+            serverProcessStartTime: serverReceiveTime, // 처리 시작은 수신과 같다고 가정
+            serverProcessEndTime,
+            serverSendTime
+        }
     }
 }
 
-function parseJPEGMessage(data: ArrayBuffer): { jpegData: ArrayBuffer, depthData: ArrayBuffer } | null {
+function parseJPEGMessage(data: ArrayBuffer): { 
+    frameId: number,
+    jpegData: ArrayBuffer, 
+    depthData: ArrayBuffer,
+    serverTimestamps: {
+        serverReceiveTime: number,
+        serverProcessStartTime: number,
+        serverProcessEndTime: number,
+        serverSendTime: number
+    }
+} | null {
     const dv = new DataView(data)
-    const HEADER_SIZE = 4 + 4 + 8 + 8 + 8; // IIddd format: jpeg_len + depth_len + 3 timestamps
+    const HEADER_SIZE = 4 + 4 + 4 + 8 + 8 + 8 + 8; // jpeg_len + depth_len + frameId + 4 timestamps
 
     if (data.byteLength < HEADER_SIZE) {
         console.error(`JPEG message too short: ${data.byteLength} < ${HEADER_SIZE}`)
@@ -96,9 +157,12 @@ function parseJPEGMessage(data: ArrayBuffer): { jpegData: ArrayBuffer, depthData
 
     const jpegLen = dv.getUint32(0, true)
     const depthLen = dv.getUint32(4, true)
+    const frameId = dv.getUint32(8, true)
+    const clientSendTime = dv.getFloat64(12, true)
+    const serverReceiveTime = dv.getFloat64(20, true)
+    const serverProcessEndTime = dv.getFloat64(28, true)
+    const serverSendTime = dv.getFloat64(36, true)
     const jpegStart = HEADER_SIZE
-
-    // console.log(`Parsing JPEG message: jpegLen=${jpegLen}, depthLen=${depthLen}, totalSize=${data.byteLength}`)
 
     if (data.byteLength < jpegStart + jpegLen + depthLen) {
         console.error(`JPEG message incomplete: expected ${jpegStart + jpegLen + depthLen}, got ${data.byteLength}`)
@@ -106,8 +170,15 @@ function parseJPEGMessage(data: ArrayBuffer): { jpegData: ArrayBuffer, depthData
     }
 
     return {
+        frameId,
         jpegData: data.slice(jpegStart, jpegStart + jpegLen),
-        depthData: data.slice(jpegStart + jpegLen, jpegStart + jpegLen + depthLen)
+        depthData: data.slice(jpegStart + jpegLen, jpegStart + jpegLen + depthLen),
+        serverTimestamps: {
+            serverReceiveTime,
+            serverProcessStartTime: serverReceiveTime,
+            serverProcessEndTime,
+            serverSendTime
+        }
     }
 }
 
@@ -134,19 +205,36 @@ function updateCamera(data: CameraMessage) {
     // projection (16 floats)
     dv.set(projection, 16);
 
-    // 타임스탬프 추가 (8 bytes)
+    // frameId와 타임스탬프 추가 (4 + 4(패딩) + 8 = 16 bytes)
     const timestamp = performance.timeOrigin + performance.now();
-    const timestampBuffer = new Float64Array([timestamp]);
+    const frameId = data.frameId || 0;
 
-    // 최종 버퍼 생성 (128 + 8 = 136 bytes)
-    const finalBuffer = new ArrayBuffer(136);
+    // 최종 버퍼 생성 (128 + 16 = 144 bytes, 8바이트 정렬을 위해 패딩 추가)
+    const finalBuffer = new ArrayBuffer(144);
     const floatView = new Float32Array(finalBuffer, 0, 32);
-    const timestampView = new Float64Array(finalBuffer, 128);
+    const frameIdView = new Uint32Array(finalBuffer, 128, 1);
+    // 132는 8의 배수가 아니므로 136으로 조정 (8바이트 정렬)
+    const timestampView = new Float64Array(finalBuffer, 136, 1);
 
     floatView.set(dv);
-    timestampView.set(timestampBuffer);
+    frameIdView[0] = frameId;
+    timestampView[0] = timestamp;
 
     ws.send(finalBuffer);
+}
+
+function sendPing(clientTime: number) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    // Ping 메시지: type(1 byte) + padding(7 bytes) + clientTime(8 bytes) = 16 bytes (8바이트 정렬)
+    const buffer = new ArrayBuffer(16);
+    const typeView = new Uint8Array(buffer, 0, 1);
+    const timeView = new Float64Array(buffer, 8, 1);  // 8바이트 정렬된 위치
+    
+    typeView[0] = 255; // ping message type
+    timeView[0] = clientTime;
+    
+    ws.send(buffer);
 }
 
 async function initDecoder() {
@@ -217,51 +305,94 @@ async function initWebSocket(wsURL: string) {
     }
     ws.onmessage = async e => {
         const arrBuf = e.data as ArrayBuffer;
+        const clientReceiveTime = performance.now();
+
+        // Ping response 처리 (type(1) + padding(7) + clientTime(8) + serverTime(8) = 24 bytes)
+        if (arrBuf.byteLength === 24) { 
+            const dv = new DataView(arrBuf);
+            const type = dv.getUint8(0);
+            if (type === 254) { // pong message type
+                const clientTime = dv.getFloat64(8, true);   // 8바이트 정렬된 위치
+                const serverTime = dv.getFloat64(16, true);  // 16바이트 위치
+                
+                self.postMessage({
+                    type: 'pong-received',
+                    clientRequestTime: clientTime,
+                    serverReceiveTime: serverTime,
+                    serverSendTime: serverTime, // 간단히 동일하다고 가정
+                    clientResponseTime: clientReceiveTime
+                });
+                return;
+            }
+        }
 
         if (jpegFallback) {
-            // console.log("Processing JPEG fallback message")
-            const { jpegData, depthData } = parseJPEGMessage(arrBuf)
-
-            if (!jpegData || !depthData) {
-                console.error("Failed to parse JPEG message")
-                return
+            const parseResult = parseJPEGMessage(arrBuf);
+            if (!parseResult) {
+                console.error("Failed to parse JPEG message");
+                return;
             }
 
-            // console.log(`JPEG data: ${jpegData.byteLength} bytes, Depth data: ${depthData.byteLength} bytes`)
-            const colorBitmap = await createImageBitmap(new Blob([jpegData], { type: 'image/jpeg' }))
+            const { frameId, jpegData, depthData, serverTimestamps } = parseResult;
+            const colorBitmap = await createImageBitmap(new Blob([jpegData], { type: 'image/jpeg' }));
+            const depthFloat16 = new Uint16Array(depthData);
 
-            // Use raw 16-bit depth data directly (already in [0,1] range)
-            const depthFloat16 = new Uint16Array(depthData)
+            // 레이턴시 추적 정보 전달
+            self.postMessage({
+                type: 'frame-receive',
+                frameId,
+                serverTimestamps,
+                clientReceiveTime
+            });
 
-            // console.log(`Received ${depthFloat16.length} depth values as float16 [0,1] range`)
-
-            // Increment frame count for FPS calculation
-            decodeCnt++
+            decodeCnt++;
+            const decodeCompleteTime = performance.now();
 
             self.postMessage({
                 type: 'frame',
+                frameId,
                 image: colorBitmap,
                 depth: depthFloat16,
-            })
+                decodeCompleteTime
+            });
 
-            const now = performance.now()
-
+            const now = performance.now();
             if (now - decodeStart > 1000) {
-                const fps = decodeCnt / ((now - decodeStart) / 1000)
-                self.postMessage({ type: 'fps', decode: fps })
-                decodeCnt = 0
-                decodeStart = now
+                const fps = decodeCnt / ((now - decodeStart) / 1000);
+                self.postMessage({ type: 'fps', decode: fps });
+                decodeCnt = 0;
+                decodeStart = now;
             }
         } else {
-            // console.log("VideoDecoder Enable")
+            const parseResult = parseH264Message(arrBuf);
+            if (!parseResult) {
+                console.error("Failed to parse H264 message");
+                return;
+            }
+
+            const { frameId, videoData, serverTimestamps } = parseResult;
+
+            // 레이턴시 추적 정보 전달
+            self.postMessage({
+                type: 'frame-receive',
+                frameId,
+                serverTimestamps,
+                clientReceiveTime
+            });
+
             if (!decoderInitialized) {
                 await initDecoder();
             }
+            
             const chunk = new EncodedVideoChunk({
                 type: 'key',
                 timestamp: performance.now(),
-                data: arrBuf
+                data: videoData
             });
+            
+            // frameId를 VideoFrame에 연결하기 위해 저장
+            pendingFrames.set(chunk.timestamp, { frameId, serverTimestamps });
+            
             videoDecoder.decode(chunk);
         }
     };
@@ -297,27 +428,39 @@ async function splitFrameCanvas(frame: VideoFrame, w: number, h: number) {
 
 async function handleFrame(frame: VideoFrame) {
     decodeCnt++;
+    const decodeCompleteTime = performance.now();
 
     const w = frame.codedWidth
     const h = frame.codedHeight / 2;
 
-    const [colorBitmap, depthBitmap] = await splitFrameCanvas(frame, w, h)
+    const [colorBitmap, depthBitmap] = await splitFrameCanvas(frame, w, h);
 
-    frame.close()
+    // pending frame 정보 찾기
+    const frameInfo = pendingFrames.get(frame.timestamp);
+    let frameId = 0;
+    
+    if (frameInfo) {
+        frameId = frameInfo.frameId;
+        pendingFrames.delete(frame.timestamp);
+    }
+
+    frame.close();
 
     self.postMessage({
         type: 'frame',
+        frameId,
         image: colorBitmap,
         depth: depthBitmap,
-    })
+        decodeCompleteTime
+    });
 
-    const now = performance.now()
+    const now = performance.now();
 
     if (now - decodeStart > 1000) {
-        const fps = decodeCnt / ((now - decodeStart) / 1000)
-        self.postMessage({ type: 'fps', decode: fps })
-        decodeCnt = 0
-        decodeStart = now
+        const fps = decodeCnt / ((now - decodeStart) / 1000);
+        self.postMessage({ type: 'fps', decode: fps });
+        decodeCnt = 0;
+        decodeStart = now;
     }
 }
 

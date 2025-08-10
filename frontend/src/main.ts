@@ -2,14 +2,15 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons'
 import { object_setup } from './scene-setup';
 import { SceneState } from './state/scene-state';
+import { LatencyTracker, LatencyStats } from './latency-tracker';
 
 import fusionVertexShader from './shaders/fusionVertexShader.vs?raw';
 import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
 import debugVertexShader from './shaders/debugVertexShader.vs?raw';
 import debugFragmentShader from './shaders/debugColorShader.fs?raw';
 
-const rtWidth = 1920;
-const rtHeight = 1080;
+const rtWidth = 1920 / 2;
+const rtHeight = 1080 / 2;
 
 let lastCameraUpdateTime = 0
 const cameraUpdateInterval = 1 / 60
@@ -39,12 +40,23 @@ let debugScene: THREE.Scene;
 let debugCamera: THREE.OrthographicCamera;
 
 const clock = new THREE.Clock();
+// 레이턴시 추적기
+const latencyTracker = new LatencyTracker();
+
 const fpsDiv = document.getElementById('decode-fps') as HTMLDivElement;
 const renderFpsDiv = document.getElementById('render-fps') as HTMLDivElement;
 const jpegFallbackCheckbox = document.getElementById('jpeg-fallback-checkbox') as HTMLInputElement;
 const wsConnectButton = document.getElementById('ws-connect-button') as HTMLInputElement;
 const wsDisconnectButton = document.getElementById('ws-disconnect-button') as HTMLInputElement;
 const wsStateConsoleText = document.getElementById('ws-state-console-text') as HTMLDivElement;
+
+// 레이턴시 표시 UI 요소들
+const latencyDiv = document.getElementById('latency-display') as HTMLDivElement;
+const totalLatencyDiv = document.getElementById('total-latency') as HTMLDivElement;
+const networkLatencyDiv = document.getElementById('network-latency') as HTMLDivElement;
+const serverLatencyDiv = document.getElementById('server-latency') as HTMLDivElement;
+const decodeLatencyDiv = document.getElementById('decode-latency') as HTMLDivElement;
+const clockOffsetDiv = document.getElementById('clock-offset') as HTMLDivElement;
 
 wsConnectButton.addEventListener('click', () => wsConnectButtonClick())
 wsDisconnectButton.addEventListener('click', () => wsDisconnectButtonClick())
@@ -122,16 +134,42 @@ worker.onmessage = ({ data }) => {
         return;
     }
 
-    if (data.type === 'frame') {
-        // const isJpegMode = jpegFallbackCheckbox.checked;
-        // console.log(`Received frame: image=${data.image}, depth=${data.depth?.constructor.name}, jpegFallback=${isJpegMode}`)
+    if (data.type === 'frame-receive') {
+        // 서버로부터 프레임 수신 시점 기록
+        latencyTracker.recordFrameReceive(data.frameId, data.serverTimestamps);
+        return;
+    }
 
+    if (data.type === 'frame') {
         wsColorTexture.image = data.image;
-        wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace
+        wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace;
 
         wsDepthTexture.image.data = data.depth;
         wsColorTexture.needsUpdate = true;
         wsDepthTexture.needsUpdate = true;
+
+        // 디코딩 완료 시점 기록
+        if (data.frameId && data.decodeCompleteTime) {
+            latencyTracker.recordDecodeComplete(data.frameId);
+            
+            // 다음 렌더 프레임에서 렌더링 완료를 기록
+            requestAnimationFrame(() => {
+                const stats = latencyTracker.recordRenderComplete(data.frameId);
+                if (stats) {
+                    // 개별 프레임 레이턴시 로깅 (디버깅용)
+                    // console.log(`Frame ${data.frameId}: ${stats.totalLatency.toFixed(1)}ms total`);
+                }
+            });
+        }
+    }
+
+    if (data.type === 'pong-received') {
+        // 클럭 동기화 데이터 기록
+        latencyTracker.recordClockSync(
+            data.clientRequestTime,
+            data.serverReceiveTime,
+            data.serverSendTime
+        );
     }
 
     if (data.type === 'fps') {
@@ -291,6 +329,10 @@ async function initScene() {
 function sendCameraSnapshot(tag?: string) {
     if (!workerReady) return;
 
+    // 프레임 ID 생성 및 레이턴시 추적 시작
+    const frameId = latencyTracker.generateFrameId();
+    latencyTracker.recordCameraSend(frameId);
+
     const projectionMatrix = camera.projectionMatrix.clone().toArray()
     const intrinsics = getCameraIntrinsics(camera, rtWidth, rtHeight);
     const camBuf: CameraBuffer = {
@@ -306,6 +348,7 @@ function sendCameraSnapshot(tag?: string) {
         target: camBuf.target.buffer,
         intrinsics: camBuf.intrinsics.buffer,
         projection: camBuf.projection.buffer,
+        frameId,
         tag // optional debug
     }, [
         camBuf.position.buffer,
@@ -313,6 +356,15 @@ function sendCameraSnapshot(tag?: string) {
         camBuf.intrinsics.buffer,
         camBuf.projection.buffer
     ]);
+
+    // 주기적으로 ping 전송 (클럭 동기화)
+    if (latencyTracker.shouldSendPing()) {
+        const pingTime = performance.now();
+        worker.postMessage({
+            type: 'ping',
+            clientTime: pingTime
+        });
+    }
 }
 
 function renderLoop() {
@@ -342,6 +394,9 @@ function renderLoop() {
     renderer.setRenderTarget(null)
     // renderer.render(debugScene, debugCamera);
     renderer.render(fusionScene, orthoCamera);
+
+    // 렌더링 완료 시점 기록 및 레이턴시 통계 업데이트
+    updateLatencyStats();
 }
 
 
@@ -367,4 +422,51 @@ function getCameraIntrinsics(camera: THREE.PerspectiveCamera, renderWidth: numbe
     const cy = renderHeight / 2;
 
     return [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+}
+
+let lastStatsUpdate = 0;
+const statsUpdateInterval = 500; // 0.5초마다 통계 업데이트
+
+function updateLatencyStats() {
+    const now = performance.now();
+    if (now - lastStatsUpdate < statsUpdateInterval) return;
+    
+    lastStatsUpdate = now;
+    
+    const stats = latencyTracker.getRecentStats(50);
+    
+    // UI 업데이트 (요소가 존재하는 경우에만)
+    if (totalLatencyDiv && stats.avg.totalLatency !== undefined) {
+        totalLatencyDiv.textContent = `Total: ${stats.avg.totalLatency.toFixed(1)}ms (${stats.p95.totalLatency?.toFixed(1)}ms p95)`;
+    }
+    
+    if (networkLatencyDiv && stats.avg.networkUploadTime !== undefined && stats.avg.networkDownloadTime !== undefined) {
+        const totalNetwork = stats.avg.networkUploadTime + stats.avg.networkDownloadTime;
+        networkLatencyDiv.textContent = `Network: ${totalNetwork.toFixed(1)}ms`;
+    }
+    
+    if (serverLatencyDiv && stats.avg.serverProcessingTime !== undefined) {
+        serverLatencyDiv.textContent = `Server: ${stats.avg.serverProcessingTime.toFixed(1)}ms`;
+    }
+    
+    if (decodeLatencyDiv && stats.avg.clientDecodeTime !== undefined) {
+        const totalClient = stats.avg.clientDecodeTime + (stats.avg.clientRenderTime || 0);
+        decodeLatencyDiv.textContent = `Client: ${totalClient.toFixed(1)}ms`;
+    }
+    
+    // 클럭 오프셋 표시
+    if (clockOffsetDiv) {
+        const offset = latencyTracker.getClockOffset();
+        clockOffsetDiv.textContent = `Clock offset: ${offset.toFixed(1)}ms`;
+    }
+
+    // 콘솔에 상세 정보 출력 (개발용)
+    if (stats.avg.totalLatency !== undefined) {
+        console.log(`Latency Stats - Total: ${stats.avg.totalLatency.toFixed(1)}ms, ` +
+                   `Network: ${((stats.avg.networkUploadTime || 0) + (stats.avg.networkDownloadTime || 0)).toFixed(1)}ms, ` +
+                   `Server: ${(stats.avg.serverProcessingTime || 0).toFixed(1)}ms, ` +
+                   `Decode: ${(stats.avg.clientDecodeTime || 0).toFixed(1)}ms, ` +
+                   `Render: ${(stats.avg.clientRenderTime || 0).toFixed(1)}ms, ` +
+                   `Offset: ${latencyTracker.getClockOffset().toFixed(1)}ms`);
+    }
 }

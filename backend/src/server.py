@@ -95,19 +95,53 @@ async def recv_loop(session: UserSession):
         while True:
             raw_with_ts = await ws.recv()
 
+            # Ping 메시지 처리 (type(1) + padding(7) + clientTime(8) = 16 bytes)
+            if len(raw_with_ts) == 16:
+                # 첫 번째 바이트가 메시지 타입, 8번째 바이트부터 clientTime
+                message_type = struct.unpack_from("<B", raw_with_ts, 0)[0]
+                if message_type == 255:  # ping message
+                    client_time = struct.unpack_from("<d", raw_with_ts, 8)[0]
+                    server_time = time.time_ns() / 1_000_000  # 나노초 정밀도
+                    # Pong 응답 (type(1) + padding(7) + clientTime(8) + serverTime(8) = 24 bytes)
+                    pong_response = struct.pack("<B7xdd", 254, client_time, server_time)
+                    await ws.send(pong_response)
+                    continue
+
+            # 기존 핸드셰이크 처리
             if len(raw_with_ts) == 4:
                 W, H = struct.unpack("<HH", raw_with_ts)
                 if width != W or height != H:
                     print(f"[+] Peer {ws.remote_address} resized to {W}x{H}")
                     width, height = W, H
+                    session.width = width
+                    session.height = height
                     while not q.empty():
                         try:
                             q.get_nowait()
                             q.task_done()
                         except asyncio.QueueEmpty:
                             break
-            elif len(raw_with_ts) >= (32 * 4 + 8):
-                server_recv_timestamp_ms = time.time() * 1000
+            # 확장된 카메라 데이터 (128 + 4 + 4(패딩) + 8 = 144 bytes)
+            elif len(raw_with_ts) == 144:
+                server_recv_timestamp_ms = time.time_ns() / 1_000_000  # 나노초 정밀도
+                
+                # frameId 추출 (128번째 바이트부터 4바이트)
+                frame_id = struct.unpack_from("<I", raw_with_ts, 128)[0]
+                # client timestamp 추출 (136번째 바이트부터 8바이트, 8바이트 정렬)  
+                client_send_timestamp_ms = struct.unpack_from("<d", raw_with_ts, 136)[0]
+                # 실제 카메라 데이터 (처음 128바이트)
+                actual_payload = raw_with_ts[:128]
+                
+                if q.full():
+                    try:
+                        q.get_nowait()
+                        q.task_done()
+                    except asyncio.QueueEmpty:
+                        pass
+                await q.put((actual_payload, client_send_timestamp_ms, server_recv_timestamp_ms, frame_id))
+            # 기존 프로토콜 호환성 (32 * 4 + 8 = 136 bytes)
+            elif len(raw_with_ts) == 136:
+                server_recv_timestamp_ms = time.time_ns() / 1_000_000
                 client_send_timestamp_ms = struct.unpack_from("<d", raw_with_ts, len(raw_with_ts) - 8)[0]
                 actual_payload = raw_with_ts[:-8]
                 if q.full():
@@ -116,7 +150,7 @@ async def recv_loop(session: UserSession):
                         q.task_done()
                     except asyncio.QueueEmpty:
                         pass
-                await q.put((actual_payload, client_send_timestamp_ms, server_recv_timestamp_ms))
+                await q.put((actual_payload, client_send_timestamp_ms, server_recv_timestamp_ms, 0))  # frameId = 0
                 
     except websockets.exceptions.ConnectionClosed:
         print(f"Connection closed for {ws.remote_address}")
@@ -186,8 +220,17 @@ async def render_loop(session: UserSession):
     frame_count = 0
     try:
         while True:
-            raw_payload, client_send_timestamp_ms, server_recv_timestamp_ms = await q.get()
-            start_time = time.perf_counter()
+            queue_data = await q.get()
+            
+            # 확장된 프로토콜 지원
+            if len(queue_data) == 4:
+                raw_payload, client_send_timestamp_ms, server_recv_timestamp_ms, frame_id = queue_data
+            else:
+                # 기존 프로토콜 호환성
+                raw_payload, client_send_timestamp_ms, server_recv_timestamp_ms = queue_data
+                frame_id = frame_count
+            
+            server_process_start_ms = time.time() * 1000
             view_mat, intrinsics = ws_handler.parse_payload(raw_payload)
 
             # --- 렌더링 ---
@@ -206,17 +249,9 @@ async def render_loop(session: UserSession):
             processed_depth = depth_to_8bit_one_channel(depth_raw, alpha_cuda)
             depth_rgb_8bit = processed_depth.unsqueeze(-1).expand(-1, -1, 3).contiguous()
 
-            # with open("depth_rgb_8bit.jpg", "wb") as f:
-            #     nv_img = nvc.as_image(d_uint8)
-            #     encoded = img_encoder.encode(nv_img, ".jpeg", params=nvc.EncodeParams(quality=95))
-            #     f.write(encoded)
-
             combined_frame_rgb = torch.cat([
                 color_rgb_8bit, 
-                # depth_rgb_8bit,
                 depth_rgb_8bit], dim=0)
-
-            # rgba_color = torch.cat([color_rgb_8bit, alpha_8bit.unsqueeze(-1)], dim=-1)
 
             combined_frame_nv12 = convert_rgb_to_nv12(combined_frame_rgb)
 
@@ -226,13 +261,23 @@ async def render_loop(session: UserSession):
             if SAVE_FRAMES and video_file:
                 video_file.write(video_bitstream)
 
-            # --- 전송 준비 ---
-            server_process_end_timestamp_ms = time.time() * 1000
-            header = struct.pack("<Iddd", len(video_bitstream),
-                                 client_send_timestamp_ms, server_recv_timestamp_ms, server_process_end_timestamp_ms)
+            # --- 전송 준비 (확장된 헤더) ---
+            server_process_end_timestamp_ms = time.time_ns() / 1_000_000
+            
+            # 새로운 헤더 형식: videoLen(4) + frameId(4) + clientSendTime(8) + serverReceiveTime(8) + serverProcessEndTime(8) + serverSendTime(8)
+            # 실제 전송 시점은 send_loop에서 측정하므로 임시값 사용
+            header = struct.pack("<IIdddd", 
+                               len(video_bitstream),
+                               frame_id,
+                               client_send_timestamp_ms, 
+                               server_recv_timestamp_ms, 
+                               server_process_end_timestamp_ms,
+                               0.0)  # 실제 전송 시점은 send_loop에서 설정
 
-            await send_q.put((header, video_bitstream, frame_count))
-            print(f"{frame_count}: {((server_process_end_timestamp_ms - client_send_timestamp_ms) / 1000):.2f}ms")
+            await send_q.put((header, video_bitstream, frame_count, server_process_end_timestamp_ms))
+            
+            total_latency = server_process_end_timestamp_ms - client_send_timestamp_ms
+            print(f"Frame {frame_id}: {total_latency:.1f}ms total latency")
 
             frame_count += 1
             q.task_done()
@@ -252,7 +297,7 @@ async def render_loop(session: UserSession):
 
 async def render_loop_jpeg(session: UserSession):
     """
-    장면을 렌더링하고, 컬러와 뎁스를 하나의 프레임으로 합쳐 H.264로 인코딩한 후 전송합니다.
+    장면을 렌더링하고, 컬러와 뎁스를 JPEG + Float16로 인코딩한 후 전송합니다.
     """
     ws = session.ws
     q = session.q
@@ -269,8 +314,17 @@ async def render_loop_jpeg(session: UserSession):
     frame_count = 0
     try:
         while True:
-            raw_payload, client_send_timestamp_ms, server_recv_timestamp_ms = await q.get()
-            start_time = time.perf_counter() * 1000
+            queue_data = await q.get()
+            
+            # 확장된 프로토콜 지원
+            if len(queue_data) == 4:
+                raw_payload, client_send_timestamp_ms, server_recv_timestamp_ms, frame_id = queue_data
+            else:
+                # 기존 프로토콜 호환성
+                raw_payload, client_send_timestamp_ms, server_recv_timestamp_ms = queue_data
+                frame_id = frame_count
+                
+            server_process_start_ms = time.time() * 1000
             view_mat, intrinsics = ws_handler.parse_payload(raw_payload)
 
             render_colors, render_alphas, _ = scene.render(
@@ -298,16 +352,26 @@ async def render_loop_jpeg(session: UserSession):
             depth_numpy = depth_01_f16.contiguous().cpu().numpy()
             depth_bytes = depth_numpy.tobytes()
 
-            server_process_end_timestamp_ms = time.perf_counter() * 1000 - start_time
+            server_process_end_timestamp_ms = time.time_ns() / 1_000_000
 
-            header = struct.pack("<IIddd", len(jpeg_bytes), len(depth_bytes), 
-                                client_send_timestamp_ms, server_recv_timestamp_ms, server_process_end_timestamp_ms)
+            # 새로운 헤더 형식: jpegLen(4) + depthLen(4) + frameId(4) + clientSendTime(8) + serverReceiveTime(8) + serverProcessEndTime(8) + serverSendTime(8)
+            # 실제 전송 시점은 send_loop에서 측정하므로 임시값 사용
+            header = struct.pack("<IIIdddd", 
+                               len(jpeg_bytes), 
+                               len(depth_bytes),
+                               frame_id,
+                               client_send_timestamp_ms, 
+                               server_recv_timestamp_ms, 
+                               server_process_end_timestamp_ms,
+                               0.0)  # 실제 전송 시점은 send_loop에서 설정
         
-            await send_q.put((header, jpeg_bytes + depth_bytes, frame_count))
+            await send_q.put((header, jpeg_bytes + depth_bytes, frame_count, server_process_end_timestamp_ms))
+            
+            total_latency = server_process_end_timestamp_ms - client_send_timestamp_ms
+            print(f"JPEG Frame {frame_id}: {total_latency:.1f}ms total latency")
+            
             frame_count += 1
-
             q.task_done()
-
 
     except asyncio.CancelledError:
         print(f"Combined JPEG loop cancelled.")
@@ -329,8 +393,25 @@ async def send_loop(session: UserSession):
 
     try:
         while True:
-            header, video_bitstream, frame_count = await send_q.get()
-
+            queue_item = await send_q.get()
+            
+            # 확장된 큐 아이템 형식 지원
+            if len(queue_item) >= 4:
+                header, video_bitstream, frame_count, server_process_end_ms = queue_item[:4]
+                
+                # 실제 전송 시점 측정
+                server_send_timestamp_ms = time.time_ns() / 1_000_000
+                
+                # 헤더의 마지막 8바이트(serverSendTime)를 실제 전송 시점으로 업데이트
+                header_bytes = bytearray(header)
+                send_time_offset = len(header_bytes) - 8
+                struct.pack_into("<d", header_bytes, send_time_offset, server_send_timestamp_ms)
+                header = bytes(header_bytes)
+                
+            else:
+                # 기존 형식 호환성
+                header, video_bitstream, frame_count = queue_item
+            
             now = time.perf_counter()
             elapsed = now - last_send
 
@@ -339,6 +420,7 @@ async def send_loop(session: UserSession):
             
             await ws.send(header + video_bitstream)
             send_q.task_done()
+            last_send = time.perf_counter()
 
     except asyncio.CancelledError:
         print(f"Send loop cancelled.")
