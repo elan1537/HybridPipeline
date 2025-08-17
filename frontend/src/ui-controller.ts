@@ -34,22 +34,24 @@ export class UIController {
     }
 
     private setupEventListeners() {
-        // 키보드 단축키
+        // 키보드 단축키 - Use capture phase to ensure we get events first
         document.addEventListener('keydown', (event) => {
             console.log(`Key pressed: ${event.key}`);
             switch (event.key.toLowerCase()) {
                 case 'h':
                     console.log('H key pressed - toggling UI');
                     event.preventDefault();
+                    event.stopPropagation();
                     this.toggleUI();
                     break;
                 case 'escape':
                     console.log('Escape key pressed - showing UI');
                     event.preventDefault();
+                    event.stopPropagation();
                     this.showUI();
                     break;
             }
-        });
+        }, true); // Use capture phase
 
         // 더블클릭으로 UI 토글
         document.addEventListener('dblclick', (event) => {
