@@ -10,20 +10,42 @@ import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
 import debugVertexShader from './shaders/debugVertexShader.vs?raw';
 import debugFragmentShader from './shaders/debugColorShader.fs?raw';
 
-// Simple shader for displaying WebSocket color texture only
+// Shader for displaying WebSocket color texture with proper aspect ratio
 const gaussianOnlyFragmentShader = `
   varying vec2 vUv;
   uniform sampler2D wsColorSampler;
+  uniform float streamAspect;  // Stream resolution aspect ratio
+  uniform float windowAspect;  // Window aspect ratio
   
   void main() {
-    vec2 flippedUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
+    vec2 uv = vUv;
+    
+    // Aspect ratio correction to prevent stretching
+    if (streamAspect > windowAspect) {
+      // Stream is wider than window - fit width, center height
+      float scale = windowAspect / streamAspect;
+      uv.y = (uv.y - 0.5) * scale + 0.5;
+    } else {
+      // Stream is taller than window - fit height, center width  
+      float scale = streamAspect / windowAspect;
+      uv.x = (uv.x - 0.5) * scale + 0.5;
+    }
+    
+    // Check if UV is within valid range
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); // Black border
+      return;
+    }
+    
+    vec2 flippedUv = vec2(1.0 - uv.x, 1.0 - uv.y);
     vec4 wsColor = texture2D(wsColorSampler, flippedUv);
     gl_FragColor = vec4(wsColor.rgb, 1.0);
   }
 `;
 
-const rtWidth = 1920 / 1.3;
-const rtHeight = 1080 / 1.3;
+// 해상도는 이제 resolutionManager에서 관리
+let rtWidth = 1280;  // 기본값 (720p)
+let rtHeight = 720;
 
 let lastCameraUpdateTime = 0
 const cameraUpdateInterval = 1 / 60
@@ -78,13 +100,13 @@ const wsDisconnectButton = document.getElementById('ws-disconnect-button') as HT
 const wsStateConsoleText = document.getElementById('ws-state-console-text') as HTMLDivElement;
 
 // 레이턴시 표시 UI 요소들
-const latencyDiv = document.getElementById('latency-display') as HTMLDivElement;
 const totalLatencyDiv = document.getElementById('total-latency') as HTMLDivElement;
 const networkLatencyDiv = document.getElementById('network-latency') as HTMLDivElement;
 const serverLatencyDiv = document.getElementById('server-latency') as HTMLDivElement;
 const decodeLatencyDiv = document.getElementById('decode-latency') as HTMLDivElement;
 const clockOffsetDiv = document.getElementById('clock-offset') as HTMLDivElement;
 
+// UI 요소들
 const depthDebugCheckbox = document.getElementById('depth-debug-checkbox') as HTMLInputElement;
 
 // Render mode radio buttons
@@ -116,6 +138,7 @@ const performanceLogInterval = 10000; // Log every 10 seconds
 wsConnectButton.addEventListener('click', () => wsConnectButtonClick())
 wsDisconnectButton.addEventListener('click', () => wsDisconnectButtonClick())
 
+
 // Render mode event handlers
 fusionModeRadio.addEventListener('change', () => {
     if (fusionModeRadio.checked) {
@@ -139,24 +162,72 @@ localOnlyModeRadio.addEventListener('change', () => {
 });
 
 function recreateDepthTexture(isJpegMode: boolean) {
-    wsDepthTexture.dispose()
+    if (wsDepthTexture) {
+        console.log(`[recreateDepthTexture] Disposing old depth texture: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
+        wsDepthTexture.dispose();
+    }
+
+    console.log(`[recreateDepthTexture] Creating new texture for ${isJpegMode ? 'JPEG' : 'H264'} mode: ${rtWidth}×${rtHeight}`);
 
     if (isJpegMode) {
         // JPEG mode: Float16 data in Uint16Array format
-        wsDepthTexture = new THREE.DataTexture(new Uint16Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.HalfFloatType);
+        const depthArray = new Uint16Array(rtWidth * rtHeight);
+        wsDepthTexture = new THREE.DataTexture(depthArray, rtWidth, rtHeight, THREE.RedFormat, THREE.HalfFloatType);
+        console.log(`[recreateDepthTexture] JPEG mode: Created Uint16Array of size ${depthArray.length}`);
     } else {
-        // H264 mode: 8-bit RGB ImageBitmap data
-        wsDepthTexture = new THREE.DataTexture(new Uint8Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.UnsignedByteType);
+        // H264 mode: Uint8Array grayscale data
+        const depthArray = new Uint8Array(rtWidth * rtHeight);
+        wsDepthTexture = new THREE.DataTexture(depthArray, rtWidth, rtHeight, THREE.RedFormat, THREE.UnsignedByteType);
+        console.log(`[recreateDepthTexture] H264 mode: Created Uint8Array of size ${depthArray.length}`);
     }
 
     // Update shader uniforms with new texture
-    fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-    debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+    if (fusionMaterial) {
+        fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+    }
+    if (debugMaterial) {
+        debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+    }
 
-    console.log(`Recreated depth texture for ${isJpegMode ? 'JPEG' : 'H264'} mode`);
+    console.log(`[recreateDepthTexture] Depth texture recreated: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
 }
 jpegFallbackCheckbox.addEventListener('click', () => jpegFallbackButtonClick())
 depthDebugCheckbox.addEventListener('click', () => depthDebugButtonClick())
+
+
+
+// 로컬 렌더 타겟 재생성
+function recreateLocalRenderTarget() {
+    if (localRenderTarget) {
+        localRenderTarget.dispose();
+    }
+    if (localDepthTexture) {
+        localDepthTexture.dispose();
+    }
+
+    localDepthTexture = new THREE.DepthTexture(rtWidth, rtHeight);
+    localDepthTexture.type = THREE.FloatType;
+
+    localRenderTarget = new THREE.WebGLRenderTarget(rtWidth, rtHeight, {
+        depthBuffer: true,
+        stencilBuffer: false,
+        depthTexture: localDepthTexture,
+        samples: 4,
+        colorSpace: THREE.LinearSRGBColorSpace,
+    });
+
+    // 셰이더 유니폼 업데이트
+    if (fusionMaterial) {
+        fusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
+        fusionMaterial.uniforms.localDepthSampler.value = localDepthTexture;
+    }
+    if (debugMaterial) {
+        debugMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
+        debugMaterial.uniforms.localDepthSampler.value = localDepthTexture;
+    }
+}
+
+
 
 let near = 0.3;
 let far = 100
@@ -177,21 +248,7 @@ interface CameraBuffer {
 let worker = new Worker(new URL("./decode-worker.ts", import.meta.url), { type: "module" })
 let workerReady = false;
 
-if (jpegFallbackCheckbox.checked) {
-    worker.postMessage({
-        type: 'init',
-        width: rtWidth,
-        height: rtHeight,
-        wsURL: 'wss://' + location.host + '/ws/jpeg',
-    })
-} else {
-    worker.postMessage({
-        type: 'init',
-        width: rtWidth,
-        height: rtHeight,
-        wsURL: 'wss://' + location.host + '/ws/h264'
-    })
-}
+// 워커 초기화는 initScene에서 수행하도록 변경
 
 worker.onmessage = ({ data }) => {
     if (data.type === "ws-ready") {
@@ -222,7 +279,139 @@ worker.onmessage = ({ data }) => {
         wsColorTexture.image = data.image;
         wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace;
 
-        wsDepthTexture.image.data = data.depth;
+        // Depth 데이터 상세 로깅
+        const expectedSize = rtWidth * rtHeight;
+
+        console.log(`[Main] Received frame ${data.frameId}:`);
+        console.log(`[Main] Color image: ${data.image.width}×${data.image.height}`);
+
+        if (data.depth instanceof Uint8Array) {
+            // H264 모드 - depth는 Uint8Array (grayscale)
+            console.log(`[Main] H264 depth array length: ${data.depth.length}, Expected: ${expectedSize}`);
+            console.log(`[Main] Current stream resolution: ${rtWidth}×${rtHeight}`);
+
+            if (data.depth.length !== expectedSize) {
+                console.warn(`[Main] H264 depth array size mismatch! Got ${data.depth.length}, expected ${expectedSize}`);
+                console.error(`[Main] wsDepthTexture size: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
+
+                // H264 모드도 JPEG와 동일하게 emergency recreation 수행
+                console.log(`[Main] Recreating H264 depth texture to match data size...`);
+
+                // 실제 받은 데이터로부터 해상도 추정
+                const actualPixels = data.depth.length;
+                let actualWidth: number, actualHeight: number;
+
+                // 표준 해상도들 중에서 픽셀 수가 일치하는 것 찾기
+                const standardResolutions = [
+                    { w: 854, h: 480 },   // 480p = 409,920
+                    { w: 1280, h: 720 },  // 720p = 921,600  
+                    { w: 1920, h: 1080 }  // 1080p = 2,073,600
+                ];
+
+                const matchedRes = standardResolutions.find(res => res.w * res.h === actualPixels);
+
+                if (matchedRes) {
+                    actualWidth = matchedRes.w;
+                    actualHeight = matchedRes.h;
+                    console.log(`[Main] Matched standard resolution: ${actualWidth}×${actualHeight}`);
+                } else {
+                    // 표준 해상도가 아닌 경우 정사각형으로 가정
+                    actualWidth = Math.sqrt(actualPixels);
+                    actualHeight = actualWidth;
+
+                    if (actualWidth !== Math.floor(actualWidth)) {
+                        console.error(`[Main] Cannot determine resolution for ${actualPixels} pixels`);
+                        return; // 처리할 수 없는 경우 스킵
+                    }
+
+                    actualWidth = Math.floor(actualWidth);
+                    actualHeight = actualWidth;
+                    console.log(`[Main] Using square resolution: ${actualWidth}×${actualHeight}`);
+                }
+
+                // 기존 텍스처 정리 및 새 텍스처 생성
+                wsDepthTexture.dispose();
+                wsDepthTexture = new THREE.DataTexture(data.depth, actualWidth, actualHeight, THREE.RedFormat, THREE.UnsignedByteType);
+
+                // 셰이더 유니폼 업데이트
+                if (fusionMaterial) {
+                    fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+                }
+                if (debugMaterial) {
+                    debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+                }
+
+                console.log(`[Main] Emergency recreated H264 depth texture: ${actualWidth}×${actualHeight}`);
+
+            } else {
+                wsDepthTexture.image.data = data.depth;
+            }
+        } else if (data.depth instanceof Uint16Array) {
+            // JPEG 모드 - depth는 Uint16Array  
+            console.log(`[Main] Depth array length: ${data.depth.length}, Expected: ${expectedSize}`);
+            console.log(`[Main] Current stream resolution: ${rtWidth}×${rtHeight}`);
+
+            if (data.depth.length !== expectedSize) {
+                console.error(`[Main] JPEG depth array size mismatch! Got ${data.depth.length}, expected ${expectedSize}`);
+                console.error(`[Main] wsDepthTexture size: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
+
+                // 크기가 맞지 않으면 텍스처를 다시 생성
+                console.log(`[Main] Recreating JPEG depth texture to match data size...`);
+
+                // JPEG 모드도 H264와 동일한 해상도 추정 로직 사용
+                const actualPixels = data.depth.length;
+                let actualWidth: number, actualHeight: number;
+
+                // 표준 해상도들 중에서 픽셀 수가 일치하는 것 찾기
+                const standardResolutions = [
+                    { w: 854, h: 480 },   // 480p = 409,920
+                    { w: 1280, h: 720 },  // 720p = 921,600  
+                    { w: 1920, h: 1080 }  // 1080p = 2,073,600
+                ];
+
+                const matchedRes = standardResolutions.find(res => res.w * res.h === actualPixels);
+
+                if (matchedRes) {
+                    actualWidth = matchedRes.w;
+                    actualHeight = matchedRes.h;
+                    console.log(`[Main] JPEG matched standard resolution: ${actualWidth}×${actualHeight}`);
+                } else {
+                    // 표준 해상도가 아닌 경우 정사각형으로 가정
+                    actualWidth = Math.sqrt(actualPixels);
+                    actualHeight = actualWidth;
+
+                    if (actualWidth !== Math.floor(actualWidth)) {
+                        console.error(`[Main] Cannot determine JPEG resolution for ${actualPixels} pixels`);
+                        // 크기가 맞지 않아도 기존 데이터 사용
+                        wsDepthTexture.image.data = data.depth;
+                        return;
+                    }
+
+                    actualWidth = Math.floor(actualWidth);
+                    actualHeight = actualWidth;
+                    console.log(`[Main] JPEG using square resolution: ${actualWidth}×${actualHeight}`);
+                }
+
+                // 기존 텍스처 정리 및 새 텍스처 생성
+                wsDepthTexture.dispose();
+                wsDepthTexture = new THREE.DataTexture(data.depth, actualWidth, actualHeight, THREE.RedFormat, THREE.HalfFloatType);
+
+                // 셰이더 유니폼 업데이트
+                if (fusionMaterial) {
+                    fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+                }
+                if (debugMaterial) {
+                    debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+                }
+
+                console.log(`[Main] Emergency recreated JPEG depth texture: ${actualWidth}×${actualHeight}`);
+            } else {
+                wsDepthTexture.image.data = data.depth;
+            }
+        } else {
+            console.error(`[Main] Unknown depth data type:`, typeof data.depth, data.depth.constructor.name);
+            console.error(`[Main] Expected Uint8Array (H264) or Uint16Array (JPEG), got:`, data.depth);
+        }
 
         // Mark textures for update (will be applied in render loop)
         wsColorTextureNeedsUpdate = true;
@@ -304,16 +493,14 @@ function depthDebugButtonClick() {
 
 async function initScene() {
     console.log("initScene")
-    camera = new THREE.PerspectiveCamera(fov, rtWidth / rtHeight, near, far);
+
+    // 카메라 aspect ratio를 윈도우 크기에 맞춤 (가우시안 씬이 전체 창에 맞게 표시)
+    camera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, near, far);
 
     camera.position.copy(
-        // new THREE.Vector3().fromArray([-2.9227930527270307, 0.7843796894035835, -1.1898402543170186])
-        // new THREE.Vector3().fromArray([0.7843796894035835, 1.1898402543170186, 2.9227930527270307,])
         new THREE.Vector3().fromArray([0.9, 1.11, 2.22])
-
     );
     camera.lookAt(
-        // new THREE.Vector3().fromArray([-0.7849031700643463, 0.5938976614459955, 0.5316901796392622])
         new THREE.Vector3().fromArray([-0.77, 0.43, 0.95])
     );
 
@@ -326,11 +513,11 @@ async function initScene() {
         logarithmicDepthBuffer: true,
     });
     renderer.setPixelRatio(1);
-    // renderer.setSize(rtWidth, rtHeight);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     document.body.appendChild(renderer.domElement);
+
 
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -349,8 +536,41 @@ async function initScene() {
     canvas.style.touchAction = 'none'
     canvas.style.cursor = 'grab'
 
-    // robot_setup();
+    // object_setup();
     object_setup();
+
+
+    // 워커 초기화
+    if (jpegFallbackCheckbox.checked) {
+        worker.postMessage({
+            type: 'init',
+            width: rtWidth,
+            height: rtHeight,
+            wsURL: 'wss://' + location.host + '/ws/jpeg',
+        })
+    } else {
+        worker.postMessage({
+            type: 'init',
+            width: rtWidth,
+            height: rtHeight,
+            wsURL: 'wss://' + location.host + '/ws/h264'
+        })
+    }
+
+    // 윈도우 리사이즈 이벤트 리스너 추가
+    window.addEventListener('resize', () => {
+        console.log(`[Window Resize] New size: ${window.innerWidth}×${window.innerHeight}`);
+
+        // 카메라 비율을 윈도우 크기에 맞춤 (가우시안 씬이 전체 창에 맞게 표시)
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+
+        // 렌더러 크기 업데이트
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+
+        console.log(`[Window Resize] Camera aspect updated to window ratio: ${camera.aspect.toFixed(3)}`);
+    });
 
     localDepthTexture = new THREE.DepthTexture(rtWidth, rtHeight);
     localDepthTexture.type = THREE.FloatType;
@@ -370,8 +590,10 @@ async function initScene() {
 
     const initialIsJpegMode = jpegFallbackCheckbox.checked;
     if (initialIsJpegMode) {
+        // JPEG mode: Float16 data in Uint16Array format
         wsDepthTexture = new THREE.DataTexture(new Uint16Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.HalfFloatType);
     } else {
+        // H264 mode: Uint8Array grayscale data
         wsDepthTexture = new THREE.DataTexture(new Uint8Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.UnsignedByteType);
     }
 
@@ -382,7 +604,7 @@ async function initScene() {
             wsColorSampler: { value: wsColorTexture },
             wsDepthSampler: { value: wsDepthTexture },
             width: { value: rtWidth },
-            height: { value: rtHeight }
+            height: { value: rtHeight },
         },
         vertexShader: debugVertexShader,
         fragmentShader: debugFragmentShader,
@@ -569,16 +791,26 @@ function renderLoop() {
 initScene().then(() => {
     renderStart = performance.now()
     renderLoop()
+
+    // UI 컨트롤러 활성화
+    // uiController는 이미 import 시 초기화됨
 })
 
 
 
 function getCameraIntrinsics(camera: THREE.PerspectiveCamera, renderWidth: number, renderHeight: number) {
     const projmat = camera.projectionMatrix;
+
+    // 실제 해상도에 맞는 focal length 계산
+    // projection matrix에서 직접 계산하여 해상도별로 적절한 스케일링 적용
     const fx = (renderWidth / 2) * projmat.elements[0];
     const fy = (renderHeight / 2) * projmat.elements[5];
+
+    // Principal point는 해상도의 중심점
     const cx = renderWidth / 2;
     const cy = renderHeight / 2;
+
+    console.log(`[getCameraIntrinsics] Resolution: ${renderWidth}×${renderHeight}, Dynamic fx/fy: fx=${fx.toFixed(2)}, fy=${fy.toFixed(2)}`);
 
     return [fx, 0, cx, 0, fy, cy, 0, 0, 1]
 }
