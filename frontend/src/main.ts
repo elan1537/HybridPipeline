@@ -408,9 +408,45 @@ worker.onmessage = ({ data }) => {
             } else {
                 wsDepthTexture.image.data = data.depth;
             }
+        } else if (data.depth instanceof ImageBitmap) {
+            // H264 모드에서 ImageBitmap으로 전달된 depth 데이터 처리
+            console.log(`[Main] H264 depth as ImageBitmap: ${data.depth.width}×${data.depth.height}`);
+            
+            // ImageBitmap을 Uint8Array로 변환
+            const canvas = new OffscreenCanvas(data.depth.width, data.depth.height);
+            const ctx = canvas.getContext('2d')!;
+            ctx.drawImage(data.depth, 0, 0);
+            
+            const imageData = ctx.getImageData(0, 0, data.depth.width, data.depth.height);
+            const pixels = imageData.data; // RGBA data
+            
+            // RGBA에서 grayscale로 변환 (R채널만 사용)
+            const grayscaleData = new Uint8Array(data.depth.width * data.depth.height);
+            for (let i = 0; i < grayscaleData.length; i++) {
+                grayscaleData[i] = pixels[i * 4]; // R channel
+            }
+            
+            console.log(`[Main] Converted ImageBitmap to Uint8Array: ${grayscaleData.length} pixels`);
+            
+            // 기존 텍스처와 크기가 다르면 새로 생성
+            if (wsDepthTexture.image.width !== data.depth.width || wsDepthTexture.image.height !== data.depth.height) {
+                console.log(`[Main] Recreating depth texture for ImageBitmap: ${data.depth.width}×${data.depth.height}`);
+                wsDepthTexture.dispose();
+                wsDepthTexture = new THREE.DataTexture(grayscaleData, data.depth.width, data.depth.height, THREE.RedFormat, THREE.UnsignedByteType);
+                
+                // 셰이더 유니폼 업데이트
+                if (fusionMaterial) {
+                    fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+                }
+                if (debugMaterial) {
+                    debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+                }
+            } else {
+                wsDepthTexture.image.data = grayscaleData;
+            }
         } else {
             console.error(`[Main] Unknown depth data type:`, typeof data.depth, data.depth.constructor.name);
-            console.error(`[Main] Expected Uint8Array (H264) or Uint16Array (JPEG), got:`, data.depth);
+            console.error(`[Main] Expected Uint8Array (H264), Uint16Array (JPEG), or ImageBitmap (H264), got:`, data.depth);
         }
 
         // Mark textures for update (will be applied in render loop)
@@ -522,7 +558,7 @@ async function initScene() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
-    controls.autoRotate = false;
+    controls.autoRotate = true;
     controls.autoRotateSpeed = 0.5
 
     controls.target = new THREE.Vector3().fromArray([-0.77, 0.43, 0.95]);
