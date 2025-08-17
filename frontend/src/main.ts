@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons'
-import { object_setup } from './scene-setup';
+import { robot_setup, object_setup, robot_animation } from './scene-setup';
 import { SceneState } from './state/scene-state';
 import { LatencyTracker, LatencyStats } from './latency-tracker';
 import { uiController } from './ui-controller';
@@ -10,35 +10,15 @@ import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
 import debugVertexShader from './shaders/debugVertexShader.vs?raw';
 import debugFragmentShader from './shaders/debugColorShader.fs?raw';
 
-// Shader for displaying WebSocket color texture with proper aspect ratio
+// Simple shader for displaying WebSocket color texture only (based on fusionColorShader)
 const gaussianOnlyFragmentShader = `
   varying vec2 vUv;
   uniform sampler2D wsColorSampler;
-  uniform float streamAspect;  // Stream resolution aspect ratio
-  uniform float windowAspect;  // Window aspect ratio
   
   void main() {
-    vec2 uv = vUv;
-    
-    // Aspect ratio correction to prevent stretching
-    if (streamAspect > windowAspect) {
-      // Stream is wider than window - fit width, center height
-      float scale = windowAspect / streamAspect;
-      uv.y = (uv.y - 0.5) * scale + 0.5;
-    } else {
-      // Stream is taller than window - fit height, center width  
-      float scale = streamAspect / windowAspect;
-      uv.x = (uv.x - 0.5) * scale + 0.5;
-    }
-    
-    // Check if UV is within valid range
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); // Black border
-      return;
-    }
-    
-    vec2 flippedUv = vec2(1.0 - uv.x, 1.0 - uv.y);
-    vec4 wsColor = texture2D(wsColorSampler, flippedUv);
+    // Same UV flipping as in fusionColorShader
+    vec2 wsUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
+    vec4 wsColor = texture2D(wsColorSampler, wsUv);
     gl_FragColor = vec4(wsColor.rgb, 1.0);
   }
 `;
@@ -231,7 +211,7 @@ function recreateLocalRenderTarget() {
 
 let near = 0.3;
 let far = 100
-let fov = 80
+let fov = 100
 
 let renderStart = 0;
 let renderCnt = 0;
@@ -411,29 +391,29 @@ worker.onmessage = ({ data }) => {
         } else if (data.depth instanceof ImageBitmap) {
             // H264 모드에서 ImageBitmap으로 전달된 depth 데이터 처리
             console.log(`[Main] H264 depth as ImageBitmap: ${data.depth.width}×${data.depth.height}`);
-            
+
             // ImageBitmap을 Uint8Array로 변환
             const canvas = new OffscreenCanvas(data.depth.width, data.depth.height);
             const ctx = canvas.getContext('2d')!;
             ctx.drawImage(data.depth, 0, 0);
-            
+
             const imageData = ctx.getImageData(0, 0, data.depth.width, data.depth.height);
             const pixels = imageData.data; // RGBA data
-            
+
             // RGBA에서 grayscale로 변환 (R채널만 사용)
             const grayscaleData = new Uint8Array(data.depth.width * data.depth.height);
             for (let i = 0; i < grayscaleData.length; i++) {
                 grayscaleData[i] = pixels[i * 4]; // R channel
             }
-            
+
             console.log(`[Main] Converted ImageBitmap to Uint8Array: ${grayscaleData.length} pixels`);
-            
+
             // 기존 텍스처와 크기가 다르면 새로 생성
             if (wsDepthTexture.image.width !== data.depth.width || wsDepthTexture.image.height !== data.depth.height) {
                 console.log(`[Main] Recreating depth texture for ImageBitmap: ${data.depth.width}×${data.depth.height}`);
                 wsDepthTexture.dispose();
                 wsDepthTexture = new THREE.DataTexture(grayscaleData, data.depth.width, data.depth.height, THREE.RedFormat, THREE.UnsignedByteType);
-                
+
                 // 셰이더 유니폼 업데이트
                 if (fusionMaterial) {
                     fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
@@ -537,7 +517,8 @@ async function initScene() {
         new THREE.Vector3().fromArray([0.9, 1.11, 2.22])
     );
     camera.lookAt(
-        new THREE.Vector3().fromArray([-0.77, 0.43, 0.95])
+        // new THREE.Vector3().fromArray([-0.77, 0.43, 0.95])
+        new THREE.Vector3().fromArray([0.0, 0.0, 0.0])
     );
 
     localScene = new THREE.Scene();
@@ -559,9 +540,10 @@ async function initScene() {
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
     controls.autoRotate = true;
-    controls.autoRotateSpeed = 0.5
+    controls.autoRotateSpeed = 1.0
 
-    controls.target = new THREE.Vector3().fromArray([-0.77, 0.43, 0.95]);
+    // controls.target = new THREE.Vector3().fromArray([-0.77, 0.43, 0.95]);
+    controls.target = new THREE.Vector3().fromArray([0.0, 0.0, 0.0]);
 
     // Initialize adaptive camera tracking
     lastCameraPosition.copy(camera.position);
@@ -572,8 +554,8 @@ async function initScene() {
     canvas.style.touchAction = 'none'
     canvas.style.cursor = 'grab'
 
+    robot_setup();
     // object_setup();
-    object_setup();
 
 
     // 워커 초기화
@@ -760,7 +742,7 @@ function renderLoop() {
             if (ENABLE_PERFORMANCE_TRACKING) cameraUpdateCount++;
         }
     }
-    // robot_animation();
+    robot_animation();
 
     renderCnt++;
 
