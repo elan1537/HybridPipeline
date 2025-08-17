@@ -19,7 +19,6 @@ export class UIController {
     private init() {
         this.setupUI();
         this.setupEventListeners();
-        console.log('UIController initialized');
     }
 
     private setupUI() {
@@ -36,16 +35,13 @@ export class UIController {
     private setupEventListeners() {
         // 키보드 단축키 - Use capture phase to ensure we get events first
         document.addEventListener('keydown', (event) => {
-            console.log(`Key pressed: ${event.key}`);
             switch (event.key.toLowerCase()) {
                 case 'h':
-                    console.log('H key pressed - toggling UI');
                     event.preventDefault();
                     event.stopPropagation();
                     this.toggleUI();
                     break;
                 case 'escape':
-                    console.log('Escape key pressed - showing UI');
                     event.preventDefault();
                     event.stopPropagation();
                     this.showUI();
@@ -95,7 +91,6 @@ export class UIController {
     }
 
     toggleUI() {
-        console.log(`Toggle UI called. Current visibility: ${this.isUIVisible}`);
         if (this.isUIVisible) {
             this.hideUI();
         } else {
@@ -104,12 +99,8 @@ export class UIController {
     }
 
     showUI() {
-        if (!this.uiContainer) {
-            console.warn('Cannot show UI - container not found');
-            return;
-        }
+        if (!this.uiContainer) return;
         
-        console.log('Showing UI');
         this.isUIVisible = true;
         this.uiContainer.style.opacity = '1';
         this.uiContainer.style.pointerEvents = 'auto';
@@ -119,12 +110,8 @@ export class UIController {
     }
 
     hideUI() {
-        if (!this.uiContainer) {
-            console.warn('Cannot hide UI - container not found');
-            return;
-        }
+        if (!this.uiContainer) return;
         
-        console.log('Hiding UI');
         this.isUIVisible = false;
         this.uiContainer.style.opacity = '0';
         this.uiContainer.style.pointerEvents = 'none';
