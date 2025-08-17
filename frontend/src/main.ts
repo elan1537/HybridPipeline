@@ -793,7 +793,7 @@ initScene().then(() => {
     renderLoop()
 
     // UI 컨트롤러 활성화
-    // uiController는 이미 import 시 초기화됨
+    console.log('UI Controller initialized:', uiController.isVisible())
 })
 
 

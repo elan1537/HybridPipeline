@@ -19,6 +19,7 @@ export class UIController {
     private init() {
         this.setupUI();
         this.setupEventListeners();
+        console.log('UI Controller initialized with container:', this.uiContainer?.id);
     }
 
     private setupUI() {
@@ -37,17 +38,21 @@ export class UIController {
         document.addEventListener('keydown', (event) => {
             switch (event.key.toLowerCase()) {
                 case 'h':
+                    console.log('H key pressed - toggling UI');
                     event.preventDefault();
                     event.stopPropagation();
                     this.toggleUI();
                     break;
                 case 'escape':
+                    console.log('Escape key pressed - showing UI');
                     event.preventDefault();
                     event.stopPropagation();
                     this.showUI();
                     break;
             }
         }, true); // Use capture phase
+        
+        console.log('Keyboard event listeners set up');
 
         // 더블클릭으로 UI 토글
         document.addEventListener('dblclick', (event) => {
