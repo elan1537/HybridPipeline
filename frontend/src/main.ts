@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons'
 import { object_setup } from './scene-setup';
 import { SceneState } from './state/scene-state';
 import { LatencyTracker, LatencyStats } from './latency-tracker';
+import { uiController } from './ui-controller';
 
 import fusionVertexShader from './shaders/fusionVertexShader.vs?raw';
 import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
