@@ -6,8 +6,20 @@ export class UIController {
     private readonly hideDelay = 3000; // 3초 후 UI 숨김
 
     constructor() {
+        // Ensure DOM is ready before initializing
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                this.init();
+            });
+        } else {
+            this.init();
+        }
+    }
+
+    private init() {
         this.setupUI();
         this.setupEventListeners();
+        console.log('UIController initialized');
     }
 
     private setupUI() {
@@ -24,11 +36,16 @@ export class UIController {
     private setupEventListeners() {
         // 키보드 단축키
         document.addEventListener('keydown', (event) => {
+            console.log(`Key pressed: ${event.key}`);
             switch (event.key.toLowerCase()) {
                 case 'h':
+                    console.log('H key pressed - toggling UI');
+                    event.preventDefault();
                     this.toggleUI();
                     break;
                 case 'escape':
+                    console.log('Escape key pressed - showing UI');
+                    event.preventDefault();
                     this.showUI();
                     break;
             }
@@ -76,6 +93,7 @@ export class UIController {
     }
 
     toggleUI() {
+        console.log(`Toggle UI called. Current visibility: ${this.isUIVisible}`);
         if (this.isUIVisible) {
             this.hideUI();
         } else {
@@ -84,8 +102,12 @@ export class UIController {
     }
 
     showUI() {
-        if (!this.uiContainer) return;
+        if (!this.uiContainer) {
+            console.warn('Cannot show UI - container not found');
+            return;
+        }
         
+        console.log('Showing UI');
         this.isUIVisible = true;
         this.uiContainer.style.opacity = '1';
         this.uiContainer.style.pointerEvents = 'auto';
@@ -95,8 +117,12 @@ export class UIController {
     }
 
     hideUI() {
-        if (!this.uiContainer) return;
+        if (!this.uiContainer) {
+            console.warn('Cannot hide UI - container not found');
+            return;
+        }
         
+        console.log('Hiding UI');
         this.isUIVisible = false;
         this.uiContainer.style.opacity = '0';
         this.uiContainer.style.pointerEvents = 'none';
