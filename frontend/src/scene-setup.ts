@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import URDFLoader from 'urdf-loader';
 import { SceneState } from './state/scene-state';
+import { debug } from './debug-logger';
 
 function object_setup() {
     const geometry = new THREE.TorusKnotGeometry(1, 0.3, 128, 32);
@@ -16,12 +17,13 @@ function object_setup() {
     });
 
     if (!SceneState.scene) {
-        console.warn('SceneState.scene is null. object_setup()는 SceneState.scene 초기화 이후에 호출되어야 합니다.');
+        debug.warn('SceneState.scene is null. object_setup()는 SceneState.scene 초기화 이후에 호출되어야 합니다.');
         return;
     }
     SceneState.mesh = new THREE.Mesh(geometry, material1);
     SceneState.mesh.scale.set(0.2, 0.2, 0.2);
-    SceneState.mesh.position.set(-0.5, 0.8, 1.0);
+    // SceneState.mesh.position.set(-0.5, 0.8, 1.0);
+    SceneState.mesh.position.set(0, 1.0, 0);
     SceneState.mesh.rotation.y = Math.PI / 2;
     // mesh.rotation.z = -10 * Math.PI / 180;
     SceneState.scene.add(SceneState.mesh);
@@ -106,7 +108,7 @@ function object_setup() {
 
     const grid = new THREE.GridHelper(100, 100, 0x888888, 0x888888);
     grid.position.set(0, 0, 0);
-    // scene.add(grid);
+    // SceneState.scene.add(grid);
 }
 
 function robot_setup() {
@@ -133,6 +135,10 @@ function robot_setup() {
             SceneState.scene.add(SceneState.robot);
         }
     };
+
+    const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x080808, 17);
+    hemisphereLight.position.set(0, 1, -0.9);
+    SceneState.scene.add(hemisphereLight);
 }
 
 
