@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import URDFLoader from 'urdf-loader';
 import { SceneState } from './state/scene-state';
+import { debug } from './debug-logger';
 
 function object_setup() {
     const geometry = new THREE.TorusKnotGeometry(1, 0.3, 128, 32);
@@ -16,12 +17,13 @@ function object_setup() {
     });
 
     if (!SceneState.scene) {
-        console.warn('SceneState.scene is null. object_setup()는 SceneState.scene 초기화 이후에 호출되어야 합니다.');
+        debug.warn('SceneState.scene is null. object_setup()는 SceneState.scene 초기화 이후에 호출되어야 합니다.');
         return;
     }
     SceneState.mesh = new THREE.Mesh(geometry, material1);
     SceneState.mesh.scale.set(0.2, 0.2, 0.2);
-    SceneState.mesh.position.set(-0.5, 0.8, 1.0);
+    // SceneState.mesh.position.set(-0.5, 0.8, 1.0);
+    SceneState.mesh.position.set(0, 1.0, 0);
     SceneState.mesh.rotation.y = Math.PI / 2;
     // mesh.rotation.z = -10 * Math.PI / 180;
     SceneState.scene.add(SceneState.mesh);
@@ -106,7 +108,7 @@ function object_setup() {
 
     const grid = new THREE.GridHelper(100, 100, 0x888888, 0x888888);
     grid.position.set(0, 0, 0);
-    // scene.add(grid);
+    // SceneState.scene.add(grid);
 }
 
 function robot_setup() {
@@ -133,6 +135,10 @@ function robot_setup() {
             SceneState.scene.add(SceneState.robot);
         }
     };
+
+    const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x080808, 17);
+    hemisphereLight.position.set(0, 1, -0.9);
+    SceneState.scene.add(hemisphereLight);
 }
 
 
@@ -167,7 +173,7 @@ function robot_animation() {
         const shoulderPanJoint = 'shoulder_pan_joint';
         if (SceneState.robot.joints[shoulderPanJoint]) {
             // const panAngle = Math.sin(time) * (Math.PI / 2);
-            const panAngle = -5.5 * Math.PI / 180
+            const panAngle = -13 * Math.PI / 180
             SceneState.robot.setJointValue(shoulderPanJoint, panAngle);
         }
 
@@ -176,8 +182,8 @@ function robot_animation() {
         if (SceneState.robot.joints[shoulderLiftJoint]) {
             // limit: {lower: -2.356194490192345, upper: 2.356194490192345} => 약 -135도 ~ 135도
             // 좀 더 작은 범위로 움직이도록 설정
-            const liftAngle = Math.sin(time * 0.7 + Math.PI / 2) * (Math.PI / 2) - Math.PI / 4; //  -75도 ~ +15도 범위 (예시)
-            // const liftAngle = -70 * Math.PI / 180
+            // const liftAngle = Math.sin(time * 0.7 + Math.PI / 2) * (Math.PI / 2) - Math.PI / 4; //  -75도 ~ +15도 범위 (예시)
+            const liftAngle = -21.5 * Math.PI / 180
             SceneState.robot.setJointValue(shoulderLiftJoint, liftAngle);
         }
 
@@ -185,8 +191,8 @@ function robot_animation() {
         const elbowJoint = 'elbow_joint';
         if (SceneState.robot.joints[elbowJoint]) {
             // limit: {lower: -2.6179938779914944, upper: 2.6179938779914944} => 약 -150도 ~ 150도
-            const elbowAngle = Math.cos(time * 0.9) * (Math.PI / 2); // -90도에서 +90도
-            // const elbowAngle = 80 * Math.PI / 180
+            // const elbowAngle = Math.cos(time * 0.9) * (Math.PI / 2); // -90도에서 +90도
+            const elbowAngle = 85 * Math.PI / 180
             SceneState.robot.setJointValue(elbowJoint, elbowAngle);
         }
 
@@ -194,8 +200,8 @@ function robot_animation() {
         const wrist1Joint = 'wrist_1_joint';
         if (SceneState.robot.joints[wrist1Joint]) {
             // limit: {lower: -6.283185307179586, upper: 6.283185307179586} => 약 -360도 ~ 360도 (연속 회전 가능)
-            const wrist1Angle = Math.sin(time * 1.1) * Math.PI; // -180도에서 +180도
-            // const wrist1Angle = 165 * Math.PI / 180
+            // const wrist1Angle = Math.sin(time * 1.1) * Math.PI; // -180도에서 +180도
+            const wrist1Angle = 175 * Math.PI / 180
             SceneState.robot.setJointValue(wrist1Joint, wrist1Angle);
         }
 
@@ -203,8 +209,8 @@ function robot_animation() {
         const wrist2Joint = 'wrist_2_joint';
         if (SceneState.robot.joints[wrist2Joint]) {
             // limit: {lower: -6.283185307179586, upper: 6.283185307179586}
-            const wrist2Angle = Math.cos(time * 1.3 + Math.PI / 3) * (Math.PI / 1.5);
-            // const wrist2Angle = -90 * Math.PI / 180
+            // const wrist2Angle = Math.cos(time * 1.3 + Math.PI / 3) * (Math.PI / 1.5);
+            const wrist2Angle = -90 * Math.PI / 180
             SceneState.robot.setJointValue(wrist2Joint, wrist2Angle);
         }
 
