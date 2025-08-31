@@ -10,6 +10,7 @@ import fusionVertexShader from './shaders/fusionVertexShader.vs?raw';
 import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
 import debugVertexShader from './shaders/debugVertexShader.vs?raw';
 import debugFragmentShader from './shaders/debugColorShader.fs?raw';
+import depthFusionFragmentShader from './shaders/depthFusionShader.fs?raw';
 
 // Simple shader for displaying WebSocket color texture only (based on fusionColorShader)
 const gaussianOnlyFragmentShader = `
@@ -24,9 +25,9 @@ const gaussianOnlyFragmentShader = `
   }
 `;
 
-// 해상도는 이제 resolutionManager에서 관리
-let rtWidth = Math.floor(window.innerWidth * 0.85);  // 기본값 (720p)
-let rtHeight = Math.floor(window.innerHeight * 0.85);
+// Window-based resolution management
+let rtWidth = Math.floor(window.innerWidth);
+let rtHeight = Math.floor(window.innerHeight);
 
 let lastCameraUpdateTime = 0
 const cameraUpdateInterval = 1 / 60
@@ -69,6 +70,11 @@ let gaussianOnlyMaterial: THREE.ShaderMaterial;
 let gaussianOnlyScene: THREE.Scene;
 let gaussianOnlyCamera: THREE.OrthographicCamera;
 
+let depthFusionQuad: THREE.Mesh;
+let depthFusionMaterial: THREE.ShaderMaterial;
+let depthFusionScene: THREE.Scene;
+let depthFusionCamera: THREE.OrthographicCamera;
+
 const clock = new THREE.Clock();
 // 레이턴시 추적기
 const latencyTracker = new LatencyTracker();
@@ -90,6 +96,7 @@ const clockOffsetDiv = document.getElementById('clock-offset') as HTMLDivElement
 // UI 요소들
 const depthDebugCheckbox = document.getElementById('depth-debug-checkbox') as HTMLInputElement;
 const consoleDebugCheckbox = document.getElementById('console-debug-checkbox') as HTMLInputElement;
+const cameraDebugCheckbox = document.getElementById('camera-debug-checkbox') as HTMLInputElement;
 
 // FPS 측정 도구 UI 요소들
 const fpsTestButton = document.getElementById('fps-measurement-button') as HTMLInputElement;
@@ -107,16 +114,37 @@ const recordingSize = document.getElementById('recording-size') as HTMLDivElemen
 const recordingDownload = document.getElementById('recording-download') as HTMLInputElement;
 const recordingCompatibility = document.getElementById('recording-compatibility') as HTMLDivElement;
 
+// 카메라 정보 UI 요소들
+const cameraInfoSection = document.getElementById('camera-info-section') as HTMLDivElement;
+const cameraPositionDiv = document.getElementById('camera-position') as HTMLDivElement;
+const cameraTargetDiv = document.getElementById('camera-target') as HTMLDivElement;
+const saveCameraButton = document.getElementById('save-camera-button') as HTMLInputElement;
+const loadCameraButton = document.getElementById('load-camera-button') as HTMLInputElement;
+
+// Manual camera control UI elements
+const cameraPosXInput = document.getElementById('camera-pos-x') as HTMLInputElement;
+const cameraPosYInput = document.getElementById('camera-pos-y') as HTMLInputElement;
+const cameraPosZInput = document.getElementById('camera-pos-z') as HTMLInputElement;
+const cameraTarXInput = document.getElementById('camera-tar-x') as HTMLInputElement;
+const cameraTarYInput = document.getElementById('camera-tar-y') as HTMLInputElement;
+const cameraTarZInput = document.getElementById('camera-tar-z') as HTMLInputElement;
+const applyCameraButton = document.getElementById('apply-camera-button') as HTMLInputElement;
+
+// Window size display UI element
+const windowSizeDisplay = document.getElementById('window-size-display') as HTMLDivElement;
+
 // Render mode radio buttons
 const fusionModeRadio = document.getElementById('fusion-mode') as HTMLInputElement;
 const gaussianOnlyModeRadio = document.getElementById('gaussian-only-mode') as HTMLInputElement;
 const localOnlyModeRadio = document.getElementById('local-only-mode') as HTMLInputElement;
+const depthFusionModeRadio = document.getElementById('depth-fusion-mode') as HTMLInputElement;
 
 // Render mode constants
 enum RenderMode {
     FUSION = 'fusion',
     GAUSSIAN_ONLY = 'gaussian',
-    LOCAL_ONLY = 'local'
+    LOCAL_ONLY = 'local',
+    DEPTH_FUSION = 'depth-fusion'
 }
 
 let currentRenderMode: RenderMode = RenderMode.FUSION;
@@ -172,6 +200,69 @@ consoleDebugCheckbox.addEventListener('change', () => {
 });
 
 
+// Cookie utility functions
+function setCookie(name: string, value: string, days: number = 30) {
+    const expires = new Date();
+    expires.setTime(expires.getTime() + (days * 24 * 60 * 60 * 1000));
+    document.cookie = `${name}=${value};expires=${expires.toUTCString()};path=/`;
+}
+
+function getCookie(name: string): string | null {
+    const nameEQ = name + "=";
+    const ca = document.cookie.split(';');
+    for (let i = 0; i < ca.length; i++) {
+        let c = ca[i];
+        while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
+    }
+    return null;
+}
+
+// Camera position save/load functions
+function saveCameraPosition() {
+    const cameraData = {
+        position: {
+            x: camera.position.x,
+            y: camera.position.y,
+            z: camera.position.z
+        },
+        target: {
+            x: controls.target.x,
+            y: controls.target.y,
+            z: controls.target.z
+        }
+    };
+
+    setCookie('hybridpipeline_camera', JSON.stringify(cameraData));
+    debug.logMain(`Camera position saved: ${JSON.stringify(cameraData)}`);
+}
+
+function loadCameraPosition(): boolean {
+    const cookieData = getCookie('hybridpipeline_camera');
+    if (!cookieData) {
+        debug.logMain('No saved camera position found');
+        return false;
+    }
+
+    try {
+        const cameraData = JSON.parse(cookieData);
+
+        // 카메라 위치 설정
+        camera.position.set(cameraData.position.x, cameraData.position.y, cameraData.position.z);
+        controls.target.set(cameraData.target.x, cameraData.target.y, cameraData.target.z);
+
+        // OrbitControls 업데이트
+        controls.update();
+
+        debug.logMain(`Camera position loaded: ${JSON.stringify(cameraData)}`);
+        return true;
+    } catch (error) {
+        debug.error('Failed to load camera position:', error);
+        return false;
+    }
+}
+
+
 // Render mode event handlers
 fusionModeRadio.addEventListener('change', () => {
     if (fusionModeRadio.checked) {
@@ -191,6 +282,13 @@ localOnlyModeRadio.addEventListener('change', () => {
     if (localOnlyModeRadio.checked) {
         currentRenderMode = RenderMode.LOCAL_ONLY;
         debug.logMain('Switched to Local Rendering Only Mode');
+    }
+});
+
+depthFusionModeRadio.addEventListener('change', () => {
+    if (depthFusionModeRadio.checked) {
+        currentRenderMode = RenderMode.DEPTH_FUSION;
+        debug.logMain('Switched to Depth Fusion Mode');
     }
 });
 
@@ -221,6 +319,9 @@ function recreateDepthTexture(isJpegMode: boolean) {
     if (debugMaterial) {
         debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
     }
+    if (depthFusionMaterial) {
+        depthFusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+    }
 
     debug.logMain(`[recreateDepthTexture] Depth texture recreated: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
 }
@@ -229,13 +330,167 @@ depthDebugCheckbox.addEventListener('click', () => depthDebugButtonClick())
 fpsTestButton.addEventListener('click', () => fpsTestButtonClick())
 fpsResultDownload.addEventListener('click', () => downloadFPSResults())
 
+// Camera save/load button event listeners
+saveCameraButton.addEventListener('click', () => saveCameraPosition())
+loadCameraButton.addEventListener('click', () => loadCameraPosition())
+
+// Manual camera input functions
+function updateCameraInputFields() {
+    if (!cameraDebugCheckbox.checked) return;
+
+    cameraPosXInput.value = camera.position.x.toFixed(3);
+    cameraPosYInput.value = camera.position.y.toFixed(3);
+    cameraPosZInput.value = camera.position.z.toFixed(3);
+    cameraTarXInput.value = controls.target.x.toFixed(3);
+    cameraTarYInput.value = controls.target.y.toFixed(3);
+    cameraTarZInput.value = controls.target.z.toFixed(3);
+}
+
+function applyCameraFromInputs() {
+    const posX = parseFloat(cameraPosXInput.value) || 0;
+    const posY = parseFloat(cameraPosYInput.value) || 0;
+    const posZ = parseFloat(cameraPosZInput.value) || 0;
+    const tarX = parseFloat(cameraTarXInput.value) || 0;
+    const tarY = parseFloat(cameraTarYInput.value) || 0;
+    const tarZ = parseFloat(cameraTarZInput.value) || 0;
+
+    camera.position.set(posX, posY, posZ);
+    controls.target.set(tarX, tarY, tarZ);
+    controls.update();
+
+    debug.logMain(`Camera applied: pos(${posX.toFixed(3)}, ${posY.toFixed(3)}, ${posZ.toFixed(3)}), target(${tarX.toFixed(3)}, ${tarY.toFixed(3)}, ${tarZ.toFixed(3)})`);
+}
+
+// Apply camera button event listener
+applyCameraButton.addEventListener('click', () => applyCameraFromInputs());
+
+// Update input fields when camera moves (via manual input changes)
+[cameraPosXInput, cameraPosYInput, cameraPosZInput, cameraTarXInput, cameraTarYInput, cameraTarZInput].forEach(input => {
+    input.addEventListener('input', () => {
+        // Auto-apply changes after a short delay
+        clearTimeout(input.dataset.timeout as any);
+        input.dataset.timeout = setTimeout(() => applyCameraFromInputs(), 500) as any;
+    });
+
+    // Apply immediately on Enter key
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            clearTimeout(input.dataset.timeout as any);
+            applyCameraFromInputs();
+        }
+    });
+});
+
 // 화면 녹화 이벤트 리스너
 recordingButton.addEventListener('click', () => recordingButtonClick())
 recordingDownload.addEventListener('click', () => downloadRecording())
 
 
 
-// 로컬 렌더 타겟 재생성
+// 모든 렌더 타겟과 텍스처 재생성 (해상도 변경 시)
+function recreateRenderTargets() {
+    debug.logMain(`[recreateRenderTargets] Recreating for resolution: ${rtWidth}×${rtHeight}`);
+
+    // 기존 렌더 타겟들 정리
+    if (localRenderTarget) {
+        localRenderTarget.dispose();
+    }
+    if (localDepthTexture) {
+        localDepthTexture.dispose();
+    }
+
+    // 새 해상도로 렌더 타겟 재생성
+    localDepthTexture = new THREE.DepthTexture(rtWidth, rtHeight);
+    localDepthTexture.type = THREE.FloatType;
+
+    localRenderTarget = new THREE.WebGLRenderTarget(rtWidth, rtHeight, {
+        depthBuffer: true,
+        stencilBuffer: false,
+        depthTexture: localDepthTexture,
+        samples: 4,
+    });
+
+    // WebSocket 텍스처들 재생성
+    recreateDepthTexture(jpegFallbackCheckbox.checked);
+
+    // 모든 셰이더 유니폼 업데이트
+    updateShaderUniforms();
+
+    debug.logMain(`[recreateRenderTargets] Completed for ${rtWidth}×${rtHeight}`);
+}
+
+// 모든 셰이더 유니폼 업데이트
+function updateShaderUniforms() {
+    // Fusion material 업데이트
+    if (fusionMaterial) {
+        fusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
+        fusionMaterial.uniforms.localDepthSampler.value = localDepthTexture;
+        fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+    }
+
+    // Debug material 업데이트
+    if (debugMaterial) {
+        debugMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
+        debugMaterial.uniforms.localDepthSampler.value = localDepthTexture;
+        debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+        debugMaterial.uniforms.width.value = rtWidth;
+        debugMaterial.uniforms.height.value = rtHeight;
+    }
+
+    // Depth fusion material 업데이트
+    if (depthFusionMaterial) {
+        depthFusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
+        depthFusionMaterial.uniforms.localDepthSampler.value = localDepthTexture;
+        depthFusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+    }
+}
+
+// 카메라 종단비를 윈도우 크기에 맞게 업데이트
+function updateCameraAspectRatio() {
+    if (!camera) return;
+
+    const windowAspect = window.innerWidth / window.innerHeight;
+    camera.aspect = windowAspect;
+    camera.updateProjectionMatrix();
+
+    debug.logMain(`[updateCameraAspectRatio] Updated to ${windowAspect.toFixed(3)} (${rtWidth}×${rtHeight})`);
+
+    // Update UI displays
+    updateSizeDisplays();
+}
+
+// UI 크기 정보 업데이트
+function updateSizeDisplays() {
+    if (windowSizeDisplay) {
+        windowSizeDisplay.textContent = `Window: ${window.innerWidth}×${window.innerHeight} (RT: ${rtWidth}×${rtHeight})`;
+    }
+}
+
+// 새로운 해상도로 WebSocket 재연결
+function reconnectWithNewResolution() {
+    debug.logMain('[reconnectWithNewResolution] Reconnecting with new resolution...');
+
+    // 기존 연결 종료
+    worker.postMessage({ type: 'ws-close' });
+
+    // 잠시 대기 후 새 해상도로 재연결
+    setTimeout(() => {
+        const wsURL = jpegFallbackCheckbox.checked ?
+            'wss://' + location.host + '/ws/jpeg' :
+            'wss://' + location.host + '/ws/h264';
+
+        worker.postMessage({
+            type: 'change',
+            wsURL: wsURL,
+            width: rtWidth,
+            height: rtHeight
+        });
+
+        debug.logMain(`[reconnectWithNewResolution] Reconnected with ${rtWidth}×${rtHeight}`);
+    }, 100);
+}
+
+// 기존 로컬 렌더 타겟 재생성 (호환성 유지)
 function recreateLocalRenderTarget() {
     if (localRenderTarget) {
         localRenderTarget.dispose();
@@ -252,7 +507,6 @@ function recreateLocalRenderTarget() {
         stencilBuffer: false,
         depthTexture: localDepthTexture,
         samples: 4,
-        colorSpace: THREE.LinearSRGBColorSpace,
     });
 
     // 셰이더 유니폼 업데이트
@@ -264,13 +518,17 @@ function recreateLocalRenderTarget() {
         debugMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
         debugMaterial.uniforms.localDepthSampler.value = localDepthTexture;
     }
+    if (depthFusionMaterial) {
+        depthFusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
+        depthFusionMaterial.uniforms.localDepthSampler.value = localDepthTexture;
+    }
 }
 
 
 
 let near = 0.3;
 let far = 100
-let fov = 100
+let fov = 80
 
 let renderStart = 0;
 let renderCnt = 0;
@@ -337,7 +595,7 @@ worker.onmessage = ({ data }) => {
 
     if (data.type === 'frame') {
         wsColorTexture.image = data.image;
-        wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace;
+        wsColorTexture.colorSpace = THREE.SRGBColorSpace;
 
         // Depth 데이터 상세 로깅
         const expectedSize = rtWidth * rtHeight;
@@ -761,16 +1019,19 @@ function displayFPSResult(result: FPSMeasurementResult) {
 async function initScene() {
     debug.logMain("Initializing scene")
 
-    // 카메라 aspect ratio를 윈도우 크기에 맞춤 (가우시안 씬이 전체 창에 맞게 표시)
-    camera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, near, far);
+    // 카메라 aspect ratio를 윈도우 크기에 맞춤
+    const windowAspect = window.innerWidth / window.innerHeight;
+    camera = new THREE.PerspectiveCamera(fov, windowAspect, near, far);
+    debug.logMain(`[initScene] Camera aspect ratio: ${windowAspect.toFixed(3)} (${rtWidth}×${rtHeight})`);
 
     camera.position.copy(
-        new THREE.Vector3().fromArray([0.9, 1.11, 2.22])
+        // new THREE.Vector3().fromArray([-3.15, -0.6, -4])
+        new THREE.Vector3().fromArray([-3.6, 0.5, -3.6])
     );
-    camera.lookAt(
-        // new THREE.Vector3().fromArray([-0.77, 0.43, 0.95])
-        new THREE.Vector3().fromArray([0.0, 0.0, 0.0])
-    );
+    // camera.lookAt(
+    //     // new THREE.Vector3().fromArray([-0.77, 0.43, 0.95])
+    //     new THREE.Vector3().fromArray([0.0, 0.0, 0.0])
+    // );
 
     localScene = new THREE.Scene();
     SceneState.scene = localScene;
@@ -782,7 +1043,6 @@ async function initScene() {
     });
     renderer.setPixelRatio(1);
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     document.body.appendChild(renderer.domElement);
 
@@ -790,26 +1050,33 @@ async function initScene() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
-    controls.autoRotate = true;
+    controls.autoRotate = false;
     controls.autoRotateSpeed = 1.0
 
     // controls.target = new THREE.Vector3().fromArray([-0.77, 0.43, 0.95]);
-    controls.target = new THREE.Vector3().fromArray([0.0, 0.0, 0.0]);
+    // controls.target = new THREE.Vector3().fromArray([0.0, 0.0, 0.0]);
+    controls.target = new THREE.Vector3().fromArray([-0.92, -0.3, -1.2,]);
 
     // Initialize adaptive camera tracking
     lastCameraPosition.copy(camera.position);
     lastCameraTarget.copy(controls.target);
+
+    // Auto-load saved camera position if available
+    loadCameraPosition();
+
+    // Initialize UI displays
+    updateSizeDisplays();
 
     canvas = renderer.domElement as HTMLCanvasElement
 
     canvas.style.touchAction = 'none'
     canvas.style.cursor = 'grab'
 
-    robot_setup();
-    // object_setup();
+    // robot_setup();
+    object_setup();
 
 
-    // 워커 초기화
+    // 워커 초기화 (선택된 해상도로)
     if (jpegFallbackCheckbox.checked) {
         worker.postMessage({
             type: 'init',
@@ -826,19 +1093,36 @@ async function initScene() {
         })
     }
 
+    debug.logMain(`[initScene] Initialized WebSocket with resolution: ${rtWidth}×${rtHeight}`);
+
     // 윈도우 리사이즈 이벤트 리스너 추가
     window.addEventListener('resize', () => {
-        debug.logMain(`[Window Resize] New size: ${window.innerWidth}×${window.innerHeight}`);
+        const newWidth = Math.floor(window.innerWidth);
+        const newHeight = Math.floor(window.innerHeight);
 
-        // 카메라 비율을 윈도우 크기에 맞춤 (가우시안 씬이 전체 창에 맞게 표시)
+        debug.logMain(`[Window Resize] New size: ${newWidth}×${newHeight} (Old: ${rtWidth}×${rtHeight})`);
+
+        // Update render target dimensions
+        rtWidth = newWidth;
+        rtHeight = newHeight;
+
+        // Update camera aspect ratio to match new window size
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
 
         // 렌더러 크기 업데이트
         renderer.setSize(window.innerWidth, window.innerHeight);
 
+        // Recreate render targets with new size
+        recreateRenderTargets();
 
-        debug.logMain(`[Window Resize] Camera aspect updated to window ratio: ${camera.aspect.toFixed(3)}`);
+        // Reconnect WebSocket with new resolution
+        reconnectWithNewResolution();
+
+        debug.logMain(`[Window Resize] Updated to ${rtWidth}×${rtHeight}, aspect: ${camera.aspect.toFixed(3)}`);
+
+        // Update UI displays
+        updateSizeDisplays();
     });
 
     localDepthTexture = new THREE.DepthTexture(rtWidth, rtHeight);
@@ -849,13 +1133,12 @@ async function initScene() {
         stencilBuffer: false,
         depthTexture: localDepthTexture,
         samples: 4,
-        colorSpace: THREE.LinearSRGBColorSpace,
     });
 
     wsColorTexture = new THREE.Texture()
     wsColorTexture.minFilter = THREE.LinearFilter;
     wsColorTexture.magFilter = THREE.LinearFilter;
-    wsColorTexture.colorSpace = THREE.LinearSRGBColorSpace;
+    wsColorTexture.colorSpace = THREE.SRGBColorSpace;
 
     const initialIsJpegMode = jpegFallbackCheckbox.checked;
     if (initialIsJpegMode) {
@@ -888,9 +1171,10 @@ async function initScene() {
             localDepthSampler: { value: localDepthTexture },
             wsColorSampler: { value: wsColorTexture },
             wsDepthSampler: { value: wsDepthTexture },
-            flipX: { value: true }, // X축 flip 활성화
-            contrast: { value: 0.82 }, // 대비 조정 (1.0보다 작게)
-            brightness: { value: 1 }, // 밝기 조정
+            wsFlipX: { value: true }, // X축 flip 활성화
+            fusionFlipX: { value: true }, // X축 flip 활성화
+            contrast: { value: 1.0 }, // 대비 조정 (1.0보다 작게)
+            brightness: { value: 1.0 }, // 밝기 조정
         },
         vertexShader: fusionVertexShader,
         fragmentShader: fusionColorFragmentShader,
@@ -924,6 +1208,27 @@ async function initScene() {
     gaussianOnlyScene = new THREE.Scene();
     gaussianOnlyScene.add(gaussianOnlyQuad);
     gaussianOnlyCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    // Depth fusion scene setup
+    depthFusionMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            localColorSampler: { value: localRenderTarget.texture },
+            localDepthSampler: { value: localDepthTexture },
+            wsColorSampler: { value: wsColorTexture },
+            wsDepthSampler: { value: wsDepthTexture },
+            wsFlipX: { value: true },
+            fusionFlipX: { value: true },
+        },
+        vertexShader: fusionVertexShader,
+        fragmentShader: depthFusionFragmentShader,
+        depthTest: false,
+        depthWrite: false,
+    });
+
+    depthFusionQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), depthFusionMaterial);
+    depthFusionScene = new THREE.Scene();
+    depthFusionScene.add(depthFusionQuad);
+    depthFusionCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
     // 녹화 기능 브라우저 호환성 검사
     isRecordingSupported = checkRecordingSupport();
@@ -981,6 +1286,8 @@ function sendCameraSnapshot(tag?: string) {
 function renderLoop() {
     requestAnimationFrame(renderLoop)
     controls.update(clock.getDelta());
+
+    console.log(fov, camera.aspect, near, far)
 
     const now = performance.now()
     const elapsed = now - renderStart;
@@ -1069,6 +1376,15 @@ function renderLoop() {
                 // Local only: render local scene directly to screen
                 renderer.render(localScene, camera);
                 break;
+            case RenderMode.DEPTH_FUSION:
+                // Depth fusion mode: render local to target, then depth fusion scene
+                renderer.setRenderTarget(localRenderTarget);
+                if (ENABLE_PERFORMANCE_TRACKING) renderTargetSwitchCount++;
+                renderer.render(localScene, camera);
+                renderer.setRenderTarget(null);
+                if (ENABLE_PERFORMANCE_TRACKING) renderTargetSwitchCount++;
+                renderer.render(depthFusionScene, depthFusionCamera);
+                break;
         }
     }
 
@@ -1089,6 +1405,9 @@ function renderLoop() {
 
     // FPS 측정 중이면 진행률 업데이트
     updateFPSTestUI();
+
+    // Camera debug info 업데이트
+    updateCameraDebugInfo();
 }
 
 
@@ -1190,6 +1509,19 @@ function updateFPSTestUI() {
         debug.logFPS("Auto-completion triggered by progress timer");
         stopFPSMeasurement();
     }
+}
+
+function updateCameraDebugInfo() {
+    if (!cameraDebugCheckbox.checked) return;
+
+    const position = camera.position;
+    const target = controls.target;
+
+    cameraPositionDiv.textContent = `Position: (${position.x.toFixed(3)}, ${position.y.toFixed(3)}, ${position.z.toFixed(3)})`;
+    cameraTargetDiv.textContent = `Target: (${target.x.toFixed(3)}, ${target.y.toFixed(3)}, ${target.z.toFixed(3)})`;
+
+    // Update input fields as well
+    updateCameraInputFields();
 }
 
 function downloadFPSResults() {

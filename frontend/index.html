@@ -100,27 +100,12 @@
         </div>
       </div>
 
-      <!-- 해상도 선택 섹션 -->
+      <!-- 해상도 정보 섹션 -->
       <div
-        id="resolution-section"
+        id="resolution-info-section"
         style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #333"
       >
-        <div style="color: #ffff00; font-weight: bold; margin-bottom: 4px">Resolution</div>
-        <select
-          id="resolution-select"
-          style="
-            background: #333;
-            color: #00ff00;
-            border: 1px solid #555;
-            padding: 2px;
-            font-family: monospace;
-            font-size: 12px;
-          "
-        >
-          <option value="480p">480p (854×480)</option>
-          <option value="720p" selected>720p (1280×720)</option>
-          <option value="1080p">1080p (1920×1080)</option>
-        </select>
+        <div style="color: #ffff00; font-weight: bold; margin-bottom: 4px">Resolution Info</div>
         <div id="window-size-display" style="color: #aaaaaa; font-size: 11px; margin-top: 2px">
           Window: --
         </div>
@@ -145,6 +130,10 @@
             <input type="radio" id="local-only-mode" name="render-mode" value="local" />
             Local Only
           </label>
+          <label style="font-size: 12px; color: #00ff00">
+            <input type="radio" id="depth-fusion-mode" name="render-mode" value="depth-fusion" />
+            Depth Fusion
+          </label>
         </div>
       </div>
 
@@ -159,6 +148,91 @@
           <input type="checkbox" id="console-debug-checkbox" />
           Show Console Debug
         </label>
+        <label style="font-size: 12px; color: #00ff00; display: block;">
+          <input type="checkbox" id="camera-debug-checkbox" />
+          Show Camera Info
+        </label>
+      </div>
+
+      <!-- 카메라 정보 표시 섹션 -->
+      <div
+        id="camera-info-section"
+        style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #333; display: none;"
+      >
+        <div style="color: #ffff00; font-weight: bold; margin-bottom: 4px">Camera Info</div>
+        <div id="camera-position" style="color: #aaaaaa; font-size: 11px; margin-bottom: 2px;">
+          Position: --
+        </div>
+        <div id="camera-target" style="color: #aaaaaa; font-size: 11px;">
+          Target: --
+        </div>
+        <div style="margin-top: 4px; display: flex; gap: 4px;">
+          <input 
+            type="button" 
+            id="save-camera-button" 
+            value="Save Position" 
+            style="
+              background: #333;
+              color: #00ff00;
+              border: 1px solid #555;
+              padding: 2px 6px;
+              font-family: monospace;
+              font-size: 10px;
+              cursor: pointer;
+            "
+          />
+          <input 
+            type="button" 
+            id="load-camera-button" 
+            value="Load Position" 
+            style="
+              background: #333;
+              color: #00ff00;
+              border: 1px solid #555;
+              padding: 2px 6px;
+              font-family: monospace;
+              font-size: 10px;
+              cursor: pointer;
+            "
+          />
+        </div>
+        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #555;">
+          <div style="color: #ffff00; font-weight: bold; margin-bottom: 4px; font-size: 11px;">Manual Control</div>
+          <div style="display: grid; grid-template-columns: auto 1fr; gap: 2px 4px; font-size: 10px;">
+            <label style="color: #aaaaaa;">Pos X:</label>
+            <input type="number" id="camera-pos-x" step="0.001" style="background: #222; color: #00ff00; border: 1px solid #444; padding: 1px 3px; font-family: monospace; font-size: 10px; width: 60px;" />
+            <label style="color: #aaaaaa;">Pos Y:</label>
+            <input type="number" id="camera-pos-y" step="0.001" style="background: #222; color: #00ff00; border: 1px solid #444; padding: 1px 3px; font-family: monospace; font-size: 10px; width: 60px;" />
+            <label style="color: #aaaaaa;">Pos Z:</label>
+            <input type="number" id="camera-pos-z" step="0.001" style="background: #222; color: #00ff00; border: 1px solid #444; padding: 1px 3px; font-family: monospace; font-size: 10px; width: 60px;" />
+            <label style="color: #aaaaaa;">Tar X:</label>
+            <input type="number" id="camera-tar-x" step="0.001" style="background: #222; color: #00ff00; border: 1px solid #444; padding: 1px 3px; font-family: monospace; font-size: 10px; width: 60px;" />
+            <label style="color: #aaaaaa;">Tar Y:</label>
+            <input type="number" id="camera-tar-y" step="0.001" style="background: #222; color: #00ff00; border: 1px solid #444; padding: 1px 3px; font-family: monospace; font-size: 10px; width: 60px;" />
+            <label style="color: #aaaaaa;">Tar Z:</label>
+            <input type="number" id="camera-tar-z" step="0.001" style="background: #222; color: #00ff00; border: 1px solid #444; padding: 1px 3px; font-family: monospace; font-size: 10px; width: 60px;" />
+          </div>
+          <div style="margin-top: 4px; text-align: center;">
+            <input 
+              type="button" 
+              id="apply-camera-button" 
+              value="Apply" 
+              style="
+                background: #333;
+                color: #00ff00;
+                border: 1px solid #555;
+                padding: 2px 8px;
+                font-family: monospace;
+                font-size: 10px;
+                cursor: pointer;
+              "
+            />
+          </div>
+          <div style="color: #666; font-size: 9px; margin-top: 4px; line-height: 1.2;">
+            Keyboard: WASD+QE (Position), IJKL+UO (Target)<br/>
+            Hold Shift for fine control (0.01x)
+          </div>
+        </div>
       </div>
 
       <!-- FPS 측정 도구 섹션 -->
