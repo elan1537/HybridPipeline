@@ -12,6 +12,7 @@ float LinearizeDepth(float depth)
     return (2.0 * near * far) / (far + near - z * (far - near));	
 }
 
+
 varying vec2 vUv;
 
 void main() {

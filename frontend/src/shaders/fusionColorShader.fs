@@ -2,15 +2,29 @@ uniform sampler2D localColorSampler;
 uniform sampler2D localDepthSampler;
 uniform sampler2D wsColorSampler;
 uniform sampler2D wsDepthSampler;
-uniform bool flipX;
+uniform bool wsFlipX;
+uniform bool fusionFlipX;
 uniform float contrast;
 uniform float brightness;
 varying vec2 vUv;
 
 void main() {
-    vec2 localUv = vUv;
-    vec2 wsUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
-    
+    // 기본 UV 계산
+    vec2 currentUv = vUv;
+
+    // fusionFlipX가 true이면 UV를 플립해서 모든 계산을 다시 수행
+    if (fusionFlipX) {
+        currentUv.x = 1.0 - currentUv.x;
+    }
+
+    vec2 localUv = currentUv;
+    vec2 wsUv = vec2(currentUv.x, 1.0 - currentUv.y);
+
+    // wsFlipX가 true일 때만 wsUv의 X축을 추가로 flip
+    if (wsFlipX) {
+        wsUv.x = 1.0 - wsUv.x;
+    }
+
     vec4 localColor = texture2D(localColorSampler, localUv);
     float localDepth = texture2D(localDepthSampler, localUv).r;
 
@@ -21,19 +35,10 @@ void main() {
 
     bool useLocal = wsDepth > d_8bit;
 
-    vec4 finalColor;
+    vec4 finalColor = useLocal ? localColor : wsColor;
 
-    if (flipX) {
-        finalColor = useLocal ? localColor : wsColor;
-    } else {
-        vec2 flipUv = vec2(1.0 - vUv.x, vUv.y);
-        vec4 localColorFlipped = texture2D(localColorSampler, flipUv);
-        vec4 wsColorFlipped = texture2D(wsColorSampler, vec2(1.0 - flipUv.x, 1.0 - flipUv.y));
-        finalColor = useLocal ? localColorFlipped : wsColorFlipped;
-    }
-    
-    vec3 adjustedColor = (finalColor.rgb - 0.5) * contrast + 0.5;
-    adjustedColor = adjustedColor * brightness;
-    
-    gl_FragColor = vec4(adjustedColor, finalColor.a);
+    // vec3 adjustedColor = (finalColor.rgb - 0.5) * contrast + 0.5;
+    // adjustedColor = adjustedColor * brightness;
+
+    gl_FragColor = linearToOutputTexel(finalColor);
 }

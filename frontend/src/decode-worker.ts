@@ -1,3 +1,46 @@
+// Import debug logger for worker
+interface DebugLogger {
+    setDebugEnabled(enabled: boolean): void;
+    isDebugEnabled(): boolean;
+    logWorker(message: string, ...args: any[]): void;
+    warn(message: string, ...args: any[]): void;
+    error(message: string, ...args: any[]): void;
+}
+
+// Simple debug logger implementation for worker
+const debug: DebugLogger = {
+    debugEnabled: false,
+
+    setDebugEnabled(enabled: boolean): void {
+        this.debugEnabled = enabled;
+        if (enabled) {
+            console.log('🐛 Worker debug logging enabled');
+        }
+    },
+
+    isDebugEnabled(): boolean {
+        return this.debugEnabled;
+    },
+
+    logWorker(message: string, ...args: any[]): void {
+        if (this.debugEnabled) {
+            console.log(`[DEBUG WORKER] ${message}`, ...args);
+        }
+    },
+
+    warn(message: string, ...args: any[]): void {
+        if (this.debugEnabled) {
+            console.warn(`[DEBUG WORKER WARN] ${message}`, ...args);
+        }
+    },
+
+    error(message: string, ...args: any[]): void {
+        if (this.debugEnabled) {
+            console.error(`[DEBUG WORKER ERROR] ${message}`, ...args);
+        }
+    }
+};
+
 let videoDecoder: VideoDecoder
 let ws: WebSocket
 let decoderInitialized = false;
@@ -12,6 +55,23 @@ let renderCnt = 0
 let decodeStart = performance.now()
 let renderStart = performance.now()
 let jpegFallback = false
+
+// 순수 디코딩 성능 측정을 위한 변수들
+let pureDecodeCount = 0
+let pureDecodeStart = performance.now()
+let frameDecodeStartTime = 0
+let totalDecodeTime = 0
+let minDecodeTime = Infinity
+let maxDecodeTime = 0
+
+// FPS 측정 중 샘플링 데이터 (60초 측정용)
+let fpsMeasurementSamples: number[] = []
+let lastSampleTime = 0
+let fpsMeasurementActive = false
+
+// 성능 측정 히스토리 (최근 100개 프레임)
+const decodeTimeHistory: number[] = []
+const maxHistorySize = 100
 
 // H264 디코딩용 pending frames 추적
 const pendingFrames = new Map<number, {
@@ -72,12 +132,25 @@ interface LatencyMessage {
     }
 }
 
-self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage | PingMessage | LatencyMessage>) => {
+interface FPSMeasurementStartMessage {
+    type: 'fps-measurement-start'
+}
+
+interface FPSMeasurementStopMessage {
+    type: 'fps-measurement-stop'
+}
+
+interface DebugToggleMessage {
+    type: 'debug-toggle'
+    enabled: boolean
+}
+
+self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage | PingMessage | LatencyMessage | FPSMeasurementStartMessage | FPSMeasurementStopMessage | DebugToggleMessage>) => {
     const data = evt.data
 
     switch (data.type) {
         case 'init':
-            console.log(data)
+            debug.logWorker('Received message:', data)
             await init(data)
             break
         case 'chunk':
@@ -100,11 +173,27 @@ self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMes
             break
         case 'latency-update':
             // Main thread에서 latency tracker로 전달
-            self.postMessage({ 
-                type: 'latency-update', 
+            self.postMessage({
+                type: 'latency-update',
                 frameId: data.frameId,
                 serverTimestamps: data.serverTimestamps
             })
+            break
+        case 'fps-measurement-start':
+            // FPS 측정 시작
+            fpsMeasurementActive = true
+            fpsMeasurementSamples = []
+            lastSampleTime = performance.now()
+            debug.logWorker('FPS measurement started')
+            break
+        case 'fps-measurement-stop':
+            // FPS 측정 중지
+            fpsMeasurementActive = false
+            debug.logWorker('FPS measurement stopped')
+            break
+        case 'debug-toggle':
+            // Debug logging 토글
+            debug.setDebugEnabled(data.enabled)
             break
     }
 }
@@ -136,9 +225,9 @@ function parseH264Message(data: ArrayBuffer) {
     }
 }
 
-function parseJPEGMessage(data: ArrayBuffer): { 
+function parseJPEGMessage(data: ArrayBuffer): {
     frameId: number,
-    jpegData: ArrayBuffer, 
+    jpegData: ArrayBuffer,
     depthData: ArrayBuffer,
     serverTimestamps: {
         serverReceiveTime: number,
@@ -151,7 +240,7 @@ function parseJPEGMessage(data: ArrayBuffer): {
     const HEADER_SIZE = 4 + 4 + 4 + 8 + 8 + 8 + 8; // jpeg_len + depth_len + frameId + 4 timestamps
 
     if (data.byteLength < HEADER_SIZE) {
-        console.error(`JPEG message too short: ${data.byteLength} < ${HEADER_SIZE}`)
+        debug.error(`JPEG message too short: ${data.byteLength} < ${HEADER_SIZE}`)
         return null;
     }
 
@@ -165,7 +254,7 @@ function parseJPEGMessage(data: ArrayBuffer): {
     const jpegStart = HEADER_SIZE
 
     if (data.byteLength < jpegStart + jpegLen + depthLen) {
-        console.error(`JPEG message incomplete: expected ${jpegStart + jpegLen + depthLen}, got ${data.byteLength}`)
+        debug.error(`JPEG message incomplete: expected ${jpegStart + jpegLen + depthLen}, got ${data.byteLength}`)
         return null;
     }
 
@@ -230,21 +319,106 @@ function sendPing(clientTime: number) {
     const buffer = new ArrayBuffer(16);
     const typeView = new Uint8Array(buffer, 0, 1);
     const timeView = new Float64Array(buffer, 8, 1);  // 8바이트 정렬된 위치
-    
+
     typeView[0] = 255; // ping message type
     timeView[0] = clientTime;
-    
+
     ws.send(buffer);
+}
+
+// 순수 디코딩 성능 측정 함수들
+function recordDecodeStart() {
+    frameDecodeStartTime = performance.now();
+}
+
+function recordDecodeComplete() {
+    if (frameDecodeStartTime === 0) return;
+
+    const decodeTime = performance.now() - frameDecodeStartTime;
+    pureDecodeCount++;
+    totalDecodeTime += decodeTime;
+    minDecodeTime = Math.min(minDecodeTime, decodeTime);
+    maxDecodeTime = Math.max(maxDecodeTime, decodeTime);
+
+    // FPS 측정 중이면 1초마다 샘플 수집
+    if (fpsMeasurementActive) {
+        const now = performance.now();
+        if (now - lastSampleTime >= 1000) {
+            // 1초간의 순수 디코딩 FPS 계산
+            const duration = (now - lastSampleTime) / 1000;
+            const sampleFPS = pureDecodeCount / duration;
+
+            // FPS 값 검증 및 샘플 추가
+            if (sampleFPS > 0 && sampleFPS <= 240 && isFinite(sampleFPS)) {
+                fpsMeasurementSamples.push(sampleFPS);
+                debug.logWorker(`Decode FPS sample: ${sampleFPS.toFixed(2)} fps`);
+            } else {
+                debug.warn(`Invalid decode FPS sample: ${sampleFPS.toFixed(2)} fps`);
+            }
+
+            lastSampleTime = now;
+            // pureDecodeCount는 리셋하지 않음 (전체 통계에 사용)
+        }
+    }
+
+    // 히스토리에 추가
+    decodeTimeHistory.push(decodeTime);
+    if (decodeTimeHistory.length > maxHistorySize) {
+        decodeTimeHistory.shift();
+    }
+
+    frameDecodeStartTime = 0;
+
+    // 1초마다 순수 디코딩 성능 통계 전송
+    const now = performance.now();
+    if (now - pureDecodeStart > 1000) {
+        const duration = (now - pureDecodeStart) / 1000;
+        const pureFPS = pureDecodeCount / duration;
+        const avgDecodeTime = totalDecodeTime / pureDecodeCount;
+
+        // 최근 프레임들의 디코딩 시간 분석
+        const recentTimes = decodeTimeHistory.slice(-Math.min(60, decodeTimeHistory.length));
+        const recentAvg = recentTimes.reduce((a, b) => a + b, 0) / recentTimes.length;
+        const recentMin = Math.min(...recentTimes);
+        const recentMax = Math.max(...recentTimes);
+
+        self.postMessage({
+            type: 'pure-decode-stats',
+            pureFPS,
+            avgDecodeTime,
+            minDecodeTime: minDecodeTime === Infinity ? 0 : minDecodeTime,
+            maxDecodeTime,
+            recentAvg,
+            recentMin,
+            recentMax,
+            totalFrames: pureDecodeCount,
+            // FPS 측정 중이면 샘플 데이터 전송
+            fpsMeasurementData: fpsMeasurementActive && fpsMeasurementSamples.length > 0 ? {
+                totalCount: fpsMeasurementSamples.length,
+                avgTime: fpsMeasurementSamples.reduce((a, b) => a + b, 0) / fpsMeasurementSamples.length > 0 ?
+                    1000 / (fpsMeasurementSamples.reduce((a, b) => a + b, 0) / fpsMeasurementSamples.length) : 0
+            } : null
+        });
+
+        debug.logWorker(`Pure decode stats: ${pureFPS.toFixed(2)} fps, FPS measurement ${fpsMeasurementActive ? 'ACTIVE' : 'inactive'} (${fpsMeasurementSamples.length} samples)`);
+
+        // 1초 단위 카운터만 리셋 (FPS 측정 누적 데이터는 유지)
+        pureDecodeCount = 0;
+        pureDecodeStart = now;
+        totalDecodeTime = 0;
+        minDecodeTime = Infinity;
+        maxDecodeTime = 0;
+    }
 }
 
 async function initDecoder() {
     if (decoderInitialized) return;
 
-    console.log("initDecoder")
+    debug.logWorker("initDecoder")
 
     // Safari 호환성 체크
     if (typeof VideoDecoder === 'undefined') {
-        console.error('VideoDecoder API not supported in this browser');
+        debug.error('VideoDecoder API not supported in this browser');
         return;
     }
 
@@ -252,9 +426,9 @@ async function initDecoder() {
         videoDecoder = new VideoDecoder({
             output: handleFrame,
             error: e => {
-                console.error('Decoder error', e)
-                console.error('Decoder state:', videoDecoder?.state)
-                console.error('Decoder config:', {
+                debug.error('Decoder error', e)
+                debug.error('Decoder state:', videoDecoder?.state)
+                debug.error('Decoder config:', {
                     codec: 'avc1.42E01E',
                     codedWidth: rtWidth,
                     codedHeight: rtHeight * 2
@@ -275,28 +449,28 @@ async function initDecoder() {
 
         const { supported } = await VideoDecoder.isConfigSupported(config);
         if (!supported) {
-            console.error('VideoDecoder config unsupported');
+            debug.error('VideoDecoder config unsupported');
             return;
         }
 
         videoDecoder.configure(config);
         decoderInitialized = true;
-        console.log("Decoder initialized successfully");
+        debug.logWorker("Decoder initialized successfully");
 
     } catch (error) {
-        console.error('Failed to initialize decoder:', error);
+        debug.error('Failed to initialize decoder:', error);
         decoderInitialized = false;
     }
 }
 
 async function initWebSocket(wsURL: string) {
-    console.log("initWebSocket")
-    console.log("URL: ", wsURL)
+    debug.logWorker("initWebSocket")
+    debug.logWorker("URL: ", wsURL)
     ws = new WebSocket(wsURL);
-    console.log("WS: ", ws)
+    debug.logWorker("WS: ", ws)
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
-        console.log('[MediaWorker] WS opened')
+        debug.logWorker('[MediaWorker] WS opened')
         self.postMessage({ type: 'ws-ready' })
         const buf = new ArrayBuffer(4);
         new DataView(buf).setUint16(0, rtWidth, true);
@@ -308,13 +482,13 @@ async function initWebSocket(wsURL: string) {
         const clientReceiveTime = performance.now();
 
         // Ping response 처리 (type(1) + padding(7) + clientTime(8) + serverTime(8) = 24 bytes)
-        if (arrBuf.byteLength === 24) { 
+        if (arrBuf.byteLength === 24) {
             const dv = new DataView(arrBuf);
             const type = dv.getUint8(0);
             if (type === 254) { // pong message type
                 const clientTime = dv.getFloat64(8, true);   // 8바이트 정렬된 위치
                 const serverTime = dv.getFloat64(16, true);  // 16바이트 위치
-                
+
                 self.postMessage({
                     type: 'pong-received',
                     clientRequestTime: clientTime,
@@ -329,12 +503,18 @@ async function initWebSocket(wsURL: string) {
         if (jpegFallback) {
             const parseResult = parseJPEGMessage(arrBuf);
             if (!parseResult) {
-                console.error("Failed to parse JPEG message");
+                debug.error("Failed to parse JPEG message");
                 return;
             }
 
             const { frameId, jpegData, depthData, serverTimestamps } = parseResult;
+
+            // 순수 디코딩 시작 시점 기록
+            recordDecodeStart();
             const colorBitmap = await createImageBitmap(new Blob([jpegData], { type: 'image/jpeg' }));
+            // JPEG 디코딩 완료 시점 기록 (createImageBitmap 완료 후)
+            recordDecodeComplete();
+
             const depthFloat16 = new Uint16Array(depthData);
 
             // 레이턴시 추적 정보 전달
@@ -366,7 +546,7 @@ async function initWebSocket(wsURL: string) {
         } else {
             const parseResult = parseH264Message(arrBuf);
             if (!parseResult) {
-                console.error("Failed to parse H264 message");
+                debug.error("Failed to parse H264 message");
                 return;
             }
 
@@ -383,25 +563,30 @@ async function initWebSocket(wsURL: string) {
             if (!decoderInitialized) {
                 await initDecoder();
             }
-            
+
             const chunk = new EncodedVideoChunk({
                 type: 'key',
                 timestamp: performance.now(),
                 data: videoData
             });
-            
+
             // frameId를 VideoFrame에 연결하기 위해 저장
-            pendingFrames.set(chunk.timestamp, { frameId, serverTimestamps });
-            
+            pendingFrames.set(chunk.timestamp, {
+                frameId,
+                serverTimestamps
+            });
+
+            // H264 순수 디코딩 시작 시점 기록 (VideoDecoder.decode 호출 직전)
+            recordDecodeStart();
             videoDecoder.decode(chunk);
         }
     };
     ws.onerror = e => {
-        console.error('WS error', e)
+        debug.error('WS error', e)
         self.postMessage({ type: 'ws-error' })
     }
     ws.onclose = e => {
-        console.log('WS closed', e.code)
+        debug.logWorker('WS closed', e.code)
         self.postMessage({ type: 'ws-close' })
     }
 }
@@ -427,6 +612,9 @@ async function splitFrameCanvas(frame: VideoFrame, w: number, h: number) {
 }
 
 async function handleFrame(frame: VideoFrame) {
+    // H264 순수 디코딩 완료 시점 기록 (VideoDecoder의 output 콜백이므로 실제 하드웨어 디코딩 완료)
+    recordDecodeComplete();
+
     decodeCnt++;
     const decodeCompleteTime = performance.now();
 
@@ -438,7 +626,7 @@ async function handleFrame(frame: VideoFrame) {
     // pending frame 정보 찾기
     const frameInfo = pendingFrames.get(frame.timestamp);
     let frameId = 0;
-    
+
     if (frameInfo) {
         frameId = frameInfo.frameId;
         pendingFrames.delete(frame.timestamp);
@@ -466,7 +654,7 @@ async function handleFrame(frame: VideoFrame) {
 
 function decodeChunk(arrayBuf: ArrayBuffer) {
     if (!decoderInitialized) {
-        console.warn('Decoder not initialized, skipping chunk');
+        debug.warn('Decoder not initialized, skipping chunk');
         return;
     }
 
