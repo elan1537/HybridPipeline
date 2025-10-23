@@ -182,8 +182,8 @@ function robot_animation() {
         if (SceneState.robot.joints[shoulderLiftJoint]) {
             // limit: {lower: -2.356194490192345, upper: 2.356194490192345} => 약 -135도 ~ 135도
             // 좀 더 작은 범위로 움직이도록 설정
-            // const liftAngle = Math.sin(time * 0.7 + Math.PI / 2) * (Math.PI / 2) - Math.PI / 4; //  -75도 ~ +15도 범위 (예시)
-            const liftAngle = -21.5 * Math.PI / 180
+            const liftAngle = Math.sin(time * 0.7 + Math.PI / 2) * (Math.PI / 2) - Math.PI / 4; //  -75도 ~ +15도 범위 (예시)
+            // const liftAngle = -21.5 * Math.PI / 180
             SceneState.robot.setJointValue(shoulderLiftJoint, liftAngle);
         }
 
@@ -191,8 +191,8 @@ function robot_animation() {
         const elbowJoint = 'elbow_joint';
         if (SceneState.robot.joints[elbowJoint]) {
             // limit: {lower: -2.6179938779914944, upper: 2.6179938779914944} => 약 -150도 ~ 150도
-            // const elbowAngle = Math.cos(time * 0.9) * (Math.PI / 2); // -90도에서 +90도
-            const elbowAngle = 85 * Math.PI / 180
+            const elbowAngle = Math.cos(time * 0.9) * (Math.PI / 2); // -90도에서 +90도
+            // const elbowAngle = 85 * Math.PI / 180
             SceneState.robot.setJointValue(elbowJoint, elbowAngle);
         }
 
@@ -200,8 +200,8 @@ function robot_animation() {
         const wrist1Joint = 'wrist_1_joint';
         if (SceneState.robot.joints[wrist1Joint]) {
             // limit: {lower: -6.283185307179586, upper: 6.283185307179586} => 약 -360도 ~ 360도 (연속 회전 가능)
-            // const wrist1Angle = Math.sin(time * 1.1) * Math.PI; // -180도에서 +180도
-            const wrist1Angle = 175 * Math.PI / 180
+            const wrist1Angle = Math.sin(time * 1.1) * Math.PI; // -180도에서 +180도
+            // const wrist1Angle = 175 * Math.PI / 180
             SceneState.robot.setJointValue(wrist1Joint, wrist1Angle);
         }
 
