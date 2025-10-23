@@ -44,6 +44,7 @@ const debug: DebugLogger = {
 let videoDecoder: VideoDecoder
 let ws: WebSocket
 let decoderInitialized = false;
+let cachedDescription: Uint8Array | undefined = undefined;  // SPS/PPS cache for reconnection
 
 let rtWidth = 1920
 let rtHeight = 1080
@@ -104,7 +105,8 @@ interface CameraMessage {
     target: Float32Array
     intrinsics: Float32Array
     projection: Float32Array
-    frameId?: number
+    frameId?: number,
+    timeIndex: number,
 }
 
 interface ConnectionMessage {
@@ -113,7 +115,7 @@ interface ConnectionMessage {
 }
 
 interface CloseMessage {
-    type: 'ws-close'
+    type: 'ws-close',
 }
 
 interface PingMessage {
@@ -277,6 +279,9 @@ function updateCamera(data: CameraMessage) {
     const intrinsics = new Float32Array(data.intrinsics);
     const projection = new Float32Array(data.projection);
 
+    // Debug: timeIndex 값 확인
+    debug.logWorker(`[updateCamera] Received timeIndex: ${data.timeIndex} (type: ${typeof data.timeIndex})`);
+
     const dv = new Float32Array(32); // 32 * 4 = 128 bytes
 
     // position (3 floats)
@@ -299,15 +304,18 @@ function updateCamera(data: CameraMessage) {
     const frameId = data.frameId || 0;
 
     // 최종 버퍼 생성 (128 + 16 = 144 bytes, 8바이트 정렬을 위해 패딩 추가)
-    const finalBuffer = new ArrayBuffer(144);
+    const finalBuffer = new ArrayBuffer(160);
     const floatView = new Float32Array(finalBuffer, 0, 32);
     const frameIdView = new Uint32Array(finalBuffer, 128, 1);
     // 132는 8의 배수가 아니므로 136으로 조정 (8바이트 정렬)
     const timestampView = new Float64Array(finalBuffer, 136, 1);
+    const timeIndexView = new Float32Array(finalBuffer, 144, 1);
+
 
     floatView.set(dv);
     frameIdView[0] = frameId;
     timestampView[0] = timestamp;
+    timeIndexView[0] = (typeof data.timeIndex === 'number' && !isNaN(data.timeIndex)) ? data.timeIndex : 0.0;
 
     ws.send(finalBuffer);
 }

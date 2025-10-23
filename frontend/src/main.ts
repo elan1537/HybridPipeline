@@ -26,8 +26,9 @@ const gaussianOnlyFragmentShader = `
 `;
 
 // Window-based resolution management
-let rtWidth = Math.floor(window.innerWidth);
-let rtHeight = Math.floor(window.innerHeight);
+let rescaleFactor = 0.8;
+let rtWidth = Math.floor(window.innerWidth * rescaleFactor);
+let rtHeight = Math.floor(window.innerHeight * rescaleFactor);
 
 let lastCameraUpdateTime = 0
 const cameraUpdateInterval = 1 / 60
@@ -138,16 +139,21 @@ const fusionModeRadio = document.getElementById('fusion-mode') as HTMLInputEleme
 const gaussianOnlyModeRadio = document.getElementById('gaussian-only-mode') as HTMLInputElement;
 const localOnlyModeRadio = document.getElementById('local-only-mode') as HTMLInputElement;
 const depthFusionModeRadio = document.getElementById('depth-fusion-mode') as HTMLInputElement;
+const feedForwardModeRadio = document.getElementById('feed-forward-mode') as HTMLInputElement;
 
 // Render mode constants
 enum RenderMode {
     FUSION = 'fusion',
     GAUSSIAN_ONLY = 'gaussian',
     LOCAL_ONLY = 'local',
-    DEPTH_FUSION = 'depth-fusion'
+    DEPTH_FUSION = 'depth-fusion',
+    FEED_FORWARD = 'feed-forward'
 }
 
 let currentRenderMode: RenderMode = RenderMode.FUSION;
+let currentTimeIndex: number = 0.0;
+let frameCounter: number = 0; // Integer frame counter for 4DGS (0-299)
+let isPlaying = true;
 
 // 화면 녹화 관련 변수들
 let mediaRecorder: MediaRecorder | null = null;
@@ -289,6 +295,30 @@ depthFusionModeRadio.addEventListener('change', () => {
     if (depthFusionModeRadio.checked) {
         currentRenderMode = RenderMode.DEPTH_FUSION;
         debug.logMain('Switched to Depth Fusion Mode');
+    }
+});
+
+feedForwardModeRadio.addEventListener('change', () => {
+    if (feedForwardModeRadio.checked) {
+        currentRenderMode = RenderMode.FEED_FORWARD;
+        debug.logMain('Switched to Feed Forward Mode');
+
+        worker.postMessage({
+            type: "ws-close",
+        })
+
+        setTimeout(() => {
+            const wsURL = 'wss://' + location.host + '/ws/feedforward'
+
+            worker.postMessage({
+                type: 'change',
+                wsURL: wsURL,
+                width: rtWidth,
+                height: rtHeight
+            });
+
+            debug.logMain(`[reconnectWithNewResolution] Reconnected with ${rtWidth}×${rtHeight}`);
+        }, 100);
     }
 });
 
@@ -1050,12 +1080,12 @@ async function initScene() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
-    controls.autoRotate = false;
-    controls.autoRotateSpeed = 1.0
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.001
 
     // controls.target = new THREE.Vector3().fromArray([-0.77, 0.43, 0.95]);
-    // controls.target = new THREE.Vector3().fromArray([0.0, 0.0, 0.0]);
-    controls.target = new THREE.Vector3().fromArray([-0.92, -0.3, -1.2,]);
+    controls.target = new THREE.Vector3().fromArray([0.0, 0.0, 0.0]);
+    // controls.target = new THREE.Vector3().fromArray([-0.92, -0.3, -1.2,]);
 
     // Initialize adaptive camera tracking
     lastCameraPosition.copy(camera.position);
@@ -1097,8 +1127,8 @@ async function initScene() {
 
     // 윈도우 리사이즈 이벤트 리스너 추가
     window.addEventListener('resize', () => {
-        const newWidth = Math.floor(window.innerWidth);
-        const newHeight = Math.floor(window.innerHeight);
+        const newWidth = Math.floor(window.innerWidth * rescaleFactor);
+        const newHeight = Math.floor(window.innerHeight * rescaleFactor);
 
         debug.logMain(`[Window Resize] New size: ${newWidth}×${newHeight} (Old: ${rtWidth}×${rtHeight})`);
 
@@ -1107,11 +1137,11 @@ async function initScene() {
         rtHeight = newHeight;
 
         // Update camera aspect ratio to match new window size
-        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.aspect = rtWidth / rtHeight;
         camera.updateProjectionMatrix();
 
         // 렌더러 크기 업데이트
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setSize(rtWidth, rtHeight);
 
         // Recreate render targets with new size
         recreateRenderTargets();
@@ -1258,6 +1288,11 @@ function sendCameraSnapshot(tag?: string) {
         projection: new Float32Array(projectionMatrix)
     };
 
+    // Debug: timeIndex 값 확인 (주기적으로만 출력)
+    if (frameId % 60 === 0) {
+        debug.logMain(`[sendCameraSnapshot] frameCounter=${frameCounter}, timeIndex=${currentTimeIndex.toFixed(4)}`);
+    }
+
     worker.postMessage({
         type: 'camera',
         position: camBuf.position.buffer,
@@ -1265,6 +1300,7 @@ function sendCameraSnapshot(tag?: string) {
         intrinsics: camBuf.intrinsics.buffer,
         projection: camBuf.projection.buffer,
         frameId,
+        timeIndex: currentTimeIndex,
         tag // optional debug
     }, [
         camBuf.position.buffer,
@@ -1287,10 +1323,15 @@ function renderLoop() {
     requestAnimationFrame(renderLoop)
     controls.update(clock.getDelta());
 
-    console.log(fov, camera.aspect, near, far)
+    // console.log(fov, camera.aspect, near, far)
 
     const now = performance.now()
     const elapsed = now - renderStart;
+
+    if (isPlaying) {
+        frameCounter = (frameCounter + 1) % 300;  // 0~299 loop
+        currentTimeIndex = frameCounter / 299.0;  // Normalize to 0.0~1.0
+    }
 
     // 최소 1초 경과 후 FPS 계산 (너무 짧은 간격으로 인한 오류 방지)
     if (elapsed > 1000) {
@@ -1313,13 +1354,13 @@ function renderLoop() {
         const positionDeltaSquared = camera.position.distanceToSquared(lastCameraPosition);
         const targetDeltaSquared = controls.target.distanceToSquared(lastCameraTarget);
 
-        if (positionDeltaSquared > cameraPositionThresholdSquared || targetDeltaSquared > cameraTargetThresholdSquared) {
-            sendCameraSnapshot('render');
-            lastCameraPosition.copy(camera.position);
-            lastCameraTarget.copy(controls.target);
-            lastCameraUpdateTime = now;
-            if (ENABLE_PERFORMANCE_TRACKING) cameraUpdateCount++;
-        }
+        // if (positionDeltaSquared > cameraPositionThresholdSquared || targetDeltaSquared > cameraTargetThresholdSquared) {
+        sendCameraSnapshot('render');
+        lastCameraPosition.copy(camera.position);
+        lastCameraTarget.copy(controls.target);
+        lastCameraUpdateTime = now;
+        if (ENABLE_PERFORMANCE_TRACKING) cameraUpdateCount++;
+        // }
     }
     robot_animation();
 
