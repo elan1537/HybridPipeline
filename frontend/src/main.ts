@@ -6,6 +6,13 @@ import { LatencyTracker, LatencyStats, FPSMeasurementResult } from './latency-tr
 import { uiController } from './ui-controller';
 import { debug } from './debug-logger';
 
+// CP4: New modular architecture (runs in parallel with legacy code)
+import { Application } from './core/Application';
+import { RenderMode as NewRenderMode } from './types';
+
+// Feature flag: Enable new architecture (non-breaking, runs alongside legacy)
+const USE_NEW_ARCHITECTURE = true; // Set to false to disable
+
 import fusionVertexShader from './shaders/fusionVertexShader.vs?raw';
 import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
 import debugVertexShader from './shaders/debugVertexShader.vs?raw';
@@ -503,18 +510,33 @@ function reconnectWithNewResolution() {
     // 기존 연결 종료
     worker.postMessage({ type: 'ws-close' });
 
+    // CP4.5: New architecture disconnection
+    if (USE_NEW_ARCHITECTURE && app) {
+        app.disconnectWebSocket();
+    }
+
     // 잠시 대기 후 새 해상도로 재연결
     setTimeout(() => {
         const wsURL = jpegFallbackCheckbox.checked ?
             'wss://' + location.host + '/ws/jpeg' :
             'wss://' + location.host + '/ws/h264';
 
+        // Legacy worker reconnection
         worker.postMessage({
             type: 'change',
             wsURL: wsURL,
             width: rtWidth,
             height: rtHeight
         });
+
+        // CP4.5: New architecture reconnection
+        if (USE_NEW_ARCHITECTURE && app) {
+            debug.logMain(`[CP4.5] Reconnecting new architecture with ${rtWidth}×${rtHeight}`);
+            const wsSystem = app.getWebSocketSystem();
+            if (wsSystem) {
+                wsSystem.reconnect(wsURL, rtWidth, rtHeight);
+            }
+        }
 
         debug.logMain(`[reconnectWithNewResolution] Reconnected with ${rtWidth}×${rtHeight}`);
     }, 100);
@@ -833,14 +855,28 @@ worker.onmessage = ({ data }) => {
 }
 
 function wsConnectButtonClick() {
+    const wsURL = 'wss://' + location.host + '/ws/h264';
+
+    // Legacy worker connection
     worker.postMessage({
         type: 'change',
-        wsURL: 'wss://' + location.host + '/ws/h264'
+        wsURL: wsURL
     })
+
+    // CP4.5: New architecture connection
+    if (USE_NEW_ARCHITECTURE && app) {
+        debug.logMain('[CP4.5] Connecting new architecture WebSocket...');
+        const wsSystem = app.getWebSocketSystem();
+        if (wsSystem) {
+            wsSystem.reconnect(wsURL, rtWidth, rtHeight);
+        }
+    }
 }
 
 function wsDisconnectButtonClick() {
     debug.logMain("wsDisconnectButtonClick")
+
+    // Legacy worker disconnection
     worker.postMessage({
         type: 'ws-close'
     })
@@ -851,6 +887,12 @@ function wsDisconnectButtonClick() {
     // Reset texture update flags since textures are disposed
     wsColorTextureNeedsUpdate = false;
     wsDepthTextureNeedsUpdate = false;
+
+    // CP4.5: New architecture disconnection
+    if (USE_NEW_ARCHITECTURE && app) {
+        debug.logMain('[CP4.5] Disconnecting new architecture WebSocket...');
+        app.disconnectWebSocket();
+    }
 }
 
 function jpegFallbackButtonClick() {
@@ -862,10 +904,22 @@ function jpegFallbackButtonClick() {
 
     // Switch WebSocket connection
     const wsURL = isJpegMode ? 'wss://' + location.host + '/ws/jpeg' : 'wss://' + location.host + '/ws/h264';
+
+    // Legacy worker connection
     worker.postMessage({
         type: 'change',
         wsURL: wsURL
     })
+
+    // CP4.5: New architecture connection
+    if (USE_NEW_ARCHITECTURE && app) {
+        debug.logMain(`[CP4.5] Switching to ${isJpegMode ? 'JPEG' : 'H264'} mode in new architecture`);
+        app.getTextureManager()?.setJpegMode(isJpegMode);
+        const wsSystem = app.getWebSocketSystem();
+        if (wsSystem) {
+            wsSystem.reconnect(wsURL, rtWidth, rtHeight);
+        }
+    }
 }
 
 function depthDebugButtonClick() {
@@ -1452,12 +1506,44 @@ function renderLoop() {
 }
 
 
-initScene().then(() => {
+// CP4: New architecture instance (Phase 1: runs in parallel with legacy)
+let app: Application | null = null;
+
+initScene().then(async () => {
     renderStart = performance.now()
     renderLoop()
 
     // UI 컨트롤러 활성화
     debug.logMain('UI Controller initialized:', uiController.isVisible())
+
+    // CP4: Initialize new architecture in parallel (non-breaking)
+    if (USE_NEW_ARCHITECTURE) {
+        try {
+            debug.logMain('[CP4] Initializing new architecture...');
+
+            app = new Application({
+                canvas: renderer.domElement,
+                wsUrl: '', // Will be set when connecting
+                width: rtWidth,
+                height: rtHeight,
+                renderMode: NewRenderMode.Hybrid,
+                debugMode: true,
+            });
+
+            // Phase 1: Wrap existing objects (non-breaking)
+            await app.initializeWithExistingObjects(
+                localScene,
+                camera,
+                renderer,
+                controls
+            );
+
+            debug.logMain('[CP4] New architecture initialized successfully');
+            debug.logMain('[CP4] Systems are now running in parallel with legacy code');
+        } catch (error) {
+            console.error('[CP4] Failed to initialize new architecture:', error);
+        }
+    }
 })
 
 
