@@ -297,6 +297,15 @@ async def main():
         print("[MAIN] Creating encoder...")
         encoder = create_encoder(args)
 
+        # Create encoder config for dynamic switching
+        encoder_config = {
+            'jpeg_quality': args.jpeg_quality,
+            # H264 encoder defaults (for dynamic switching)
+            'h264_bitrate': 20_000_000,  # 20 Mbps
+            'h264_fps': 60,
+            'h264_preset': 'P3',
+        }
+
         # Create service
         print("[MAIN] Creating renderer service...")
 
@@ -308,7 +317,8 @@ async def main():
             camera_socket=args.camera_socket,
             video_socket=args.video_socket,
             save_debug_output=args.save_debug_output,
-            debug_output_dir=args.debug_output_dir
+            debug_output_dir=args.debug_output_dir,
+            encoder_config=encoder_config
         )
 
         # Initialize and run

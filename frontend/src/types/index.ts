@@ -28,12 +28,16 @@ export interface CameraFrame {
 /**
  * Video frame received from the backend
  * Header: 44 bytes + variable data
+ * Supports both raw data (Uint8Array) and decoded images (ImageBitmap)
  */
 export interface VideoFrame {
   frameId: number;
   formatType: FormatType; // 0=JPEG, 1=H264, 2=Raw
-  colorData: Uint8Array;
+  colorData?: Uint8Array;
   depthData?: Float32Array;
+  colorBitmap?: ImageBitmap; // Decoded color image from worker
+  depthBitmap?: ImageBitmap; // Decoded depth image from worker (H264)
+  depthRaw?: Uint16Array; // Raw Float16 depth data (JPEG mode)
   width: number;
   height: number;
   timestamps: {

@@ -27,14 +27,17 @@ from renderer.data_types import CameraFrame, RenderPayload
 # =============================================================================
 
 CAMERA_FRAME_SIZE = 168  # bytes
-CONTROL_MESSAGE_SIZE = 8  # bytes
+CONTROL_MESSAGE_SIZE = 8  # bytes (legacy, for backward compatibility)
+CONTROL_MESSAGE_EXT_SIZE = 12  # bytes (extended with parameter)
 
 # Control message commands
 CONTROL_CMD_RESET_ENCODER = 1
+CONTROL_CMD_CHANGE_ENCODER = 2
 
 """
-Control Message Wire Format (8 bytes):
+Control Message Wire Format:
 
+Basic (8 bytes):
 Offset  Size  Type     Field
 ------  ----  -------  ------------------
 0       4     uint32   magic (0xDEADBEEF)
@@ -42,8 +45,19 @@ Offset  Size  Type     Field
 ------
 Total:  8 bytes
 
+Extended (12 bytes):
+Offset  Size  Type     Field
+------  ----  -------  ------------------
+0       4     uint32   magic (0xDEADBEEF)
+4       4     uint32   command
+8       4     uint32   param
+------
+Total:  12 bytes
+
 Commands:
-- 1: Reset encoder (for WebSocket reconnection)
+- 1: Reset encoder (for WebSocket reconnection) - 8 bytes
+- 2: Change encoder type - 12 bytes
+  * param: 0=JPEG, 1=H264, 2=Raw
 
 Camera Frame Wire Format (168 bytes):
 
@@ -162,18 +176,25 @@ def parse_camera_frame(data: bytes) -> CameraFrame:
     )
 
 
-def pack_control_message(command: int) -> bytes:
+def pack_control_message(command: int, param: int = 0) -> bytes:
     """
     Create a control message for Renderer.
 
     Args:
         command: Control command (e.g., CONTROL_CMD_RESET_ENCODER)
+        param: Optional parameter (for CONTROL_CMD_CHANGE_ENCODER: 0=JPEG, 1=H264, 2=Raw)
 
     Returns:
-        bytes: 8-byte control message
+        bytes: 8 or 12-byte control message
     """
     magic = 0xDEADBEEF
-    return struct.pack("<II", magic, command)
+
+    # If command requires parameter, use extended format (12 bytes)
+    if command == CONTROL_CMD_CHANGE_ENCODER:
+        return struct.pack("<III", magic, command, param)
+    else:
+        # Legacy format (8 bytes)
+        return struct.pack("<II", magic, command)
 
 
 def is_control_message(data: bytes) -> bool:
@@ -186,34 +207,44 @@ def is_control_message(data: bytes) -> bool:
     Returns:
         bool: True if control message
     """
-    if len(data) != CONTROL_MESSAGE_SIZE:
+    # Support both 8-byte and 12-byte control messages
+    if len(data) != CONTROL_MESSAGE_SIZE and len(data) != CONTROL_MESSAGE_EXT_SIZE:
         return False
     magic = struct.unpack_from("<I", data, 0)[0]
     return magic == 0xDEADBEEF
 
 
-def parse_control_message(data: bytes) -> int:
+def parse_control_message(data: bytes) -> Tuple[int, int]:
     """
     Parse control message.
 
     Args:
-        data: 8-byte control message
+        data: 8 or 12-byte control message
 
     Returns:
-        int: Command code
+        Tuple[int, int]: (command, param)
+            - command: Command code
+            - param: Parameter (0 if not present)
 
     Raises:
         ValueError: If invalid control message
     """
-    if len(data) != CONTROL_MESSAGE_SIZE:
-        raise ValueError(f"Control message must be {CONTROL_MESSAGE_SIZE} bytes, got {len(data)}")
+    if len(data) not in [CONTROL_MESSAGE_SIZE, CONTROL_MESSAGE_EXT_SIZE]:
+        raise ValueError(f"Control message must be {CONTROL_MESSAGE_SIZE} or {CONTROL_MESSAGE_EXT_SIZE} bytes, got {len(data)}")
 
-    magic, command = struct.unpack("<II", data)
+    magic = struct.unpack_from("<I", data, 0)[0]
 
     if magic != 0xDEADBEEF:
         raise ValueError(f"Invalid control message magic: 0x{magic:08X}")
 
-    return command
+    if len(data) == CONTROL_MESSAGE_EXT_SIZE:
+        # Extended format with parameter
+        _, command, param = struct.unpack("<III", data)
+        return (command, param)
+    else:
+        # Legacy format without parameter
+        _, command = struct.unpack("<II", data)
+        return (command, 0)
 
 
 # =============================================================================

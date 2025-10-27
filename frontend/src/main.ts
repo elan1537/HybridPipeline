@@ -598,9 +598,28 @@ interface CameraBuffer {
 let worker = new Worker(new URL("./decode-worker.ts", import.meta.url), { type: "module" })
 let workerReady = false;
 
+// Worker error handler
+worker.onerror = (error) => {
+    console.error('[Worker ERROR]', error);
+    debug.error('[Worker] Error:', error.message);
+};
+
 // 워커 초기화는 initScene에서 수행하도록 변경
 
 worker.onmessage = ({ data }) => {
+    // Debug: Log all worker messages
+    if (data.type !== 'frame-receive' && data.type !== 'pure-decode-stats') {
+        console.log('[main.ts] Worker message:', data.type);
+    }
+
+    // CP4.5: Forward messages to new architecture
+    if (USE_NEW_ARCHITECTURE && app) {
+        const wsSystem = app.getWebSocketSystem();
+        if (wsSystem) {
+            wsSystem.handleMessage(data);
+        }
+    }
+
     if (data.type === "ws-ready") {
         workerReady = true;
         wsStateConsoleText.textContent = "WS State: Connected"
@@ -900,26 +919,60 @@ function jpegFallbackButtonClick() {
     const isJpegMode = jpegFallbackCheckbox.checked;
     debug.logMain(`Switching to ${isJpegMode ? 'JPEG' : 'H264'} mode`)
 
-    // Recreate depth texture for the new mode
-    recreateDepthTexture(isJpegMode);
-
-    // Switch WebSocket connection
-    const wsURL = isJpegMode ? 'wss://' + location.host + '/ws/jpeg' : 'wss://' + location.host + '/ws/h264';
-
-    // Legacy worker connection
-    worker.postMessage({
-        type: 'change',
-        wsURL: wsURL
-    })
-
-    // CP4.5: New architecture connection
     if (USE_NEW_ARCHITECTURE && app) {
+        // New architecture: Use WebSocketSystem methods
         debug.logMain(`[CP4.5] Switching to ${isJpegMode ? 'JPEG' : 'H264'} mode in new architecture`);
-        app.getTextureManager()?.setJpegMode(isJpegMode);
+
         const wsSystem = app.getWebSocketSystem();
         if (wsSystem) {
-            wsSystem.reconnect(wsURL, rtWidth, rtHeight);
+            // 1. Backend에 encoder 변경 요청
+            const encoderType = isJpegMode ? 'jpeg' : 'h264';
+            console.log(`[main.ts] Requesting Backend encoder change to ${encoderType}`);
+            wsSystem.changeEncoderType(encoderType);
+
+            // 2. Frontend decoder 업데이트 - Worker에 JPEG fallback 플래그 전달
+            wsSystem.toggleJPEGFallback(isJpegMode);
         }
+
+        // 3. TextureManager 업데이트
+        const texManager = app.getTextureManager();
+        if (texManager) {
+            texManager.setJpegMode(isJpegMode);
+
+            // CP7: Update shader uniforms with new depth texture
+            const newDepthTexture = texManager.getDepthTexture();
+            console.log(`[jpegFallback] Getting depth texture from TextureManager:`, newDepthTexture);
+
+            if (newDepthTexture) {
+                console.log(`[jpegFallback] Updating shader materials with new depth texture`);
+                if (fusionMaterial) {
+                    fusionMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
+                    console.log(`[jpegFallback] ✅ Updated fusionMaterial depth texture`);
+                } else {
+                    console.warn(`[jpegFallback] fusionMaterial is null!`);
+                }
+                if (debugMaterial) {
+                    debugMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
+                    console.log(`[jpegFallback] ✅ Updated debugMaterial depth texture`);
+                }
+                if (depthFusionMaterial) {
+                    depthFusionMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
+                    console.log(`[jpegFallback] ✅ Updated depthFusionMaterial depth texture`);
+                }
+            } else {
+                console.error(`[jpegFallback] newDepthTexture is null!`);
+            }
+        }
+
+    } else {
+        // Legacy: Direct worker message
+        worker.postMessage({
+            type: 'toggle-jpeg-fallback',
+            enabled: isJpegMode
+        });
+
+        // Legacy: Recreate depth texture
+        recreateDepthTexture(isJpegMode);
     }
 }
 
@@ -1376,7 +1429,14 @@ function sendCameraSnapshot(tag?: string) {
 
 function renderLoop() {
     requestAnimationFrame(renderLoop)
-    controls.update(clock.getDelta());
+    const deltaTime = clock.getDelta();
+    controls.update(deltaTime);
+
+    // CP8: Update new architecture systems
+    if (USE_NEW_ARCHITECTURE && app) {
+        app.getState().set('frame:counter', frameCounter);
+        app.getState().set('frame:timeIndex', currentTimeIndex);
+    }
 
     // console.log(fov, camera.aspect, near, far)
 
@@ -1411,6 +1471,12 @@ function renderLoop() {
 
         // if (positionDeltaSquared > cameraPositionThresholdSquared || targetDeltaSquared > cameraTargetThresholdSquared) {
         sendCameraSnapshot('render');
+
+        // CP8: Send camera frame via new architecture
+        if (USE_NEW_ARCHITECTURE && app) {
+            app.sendCameraFrame();
+        }
+
         lastCameraPosition.copy(camera.position);
         lastCameraTarget.copy(controls.target);
         lastCameraUpdateTime = now;
@@ -1531,12 +1597,13 @@ initScene().then(async () => {
                 debugMode: true,
             });
 
-            // Phase 1: Wrap existing objects (non-breaking)
+            // Phase 1: Wrap existing objects (non-breaking) with existing worker
             await app.initializeWithExistingObjects(
                 localScene,
                 camera,
                 renderer,
-                controls
+                controls,
+                worker // CP4.5: Pass existing worker
             );
 
             debug.logMain('[CP4] New architecture initialized successfully');
