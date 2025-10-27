@@ -16,22 +16,39 @@ export class WebSocketSystem implements System {
   private videoFrameHandlers: Set<VideoFrameHandler> = new Set();
   private connectionStateHandlers: Set<ConnectionStateHandler> = new Set();
   private currentState: ConnectionState = ConnectionState.Disconnected;
+  private isUsingExistingWorker: boolean = false;
 
   // Configuration
   private width: number = 1280;
   private height: number = 720;
   private wsURL: string = "";
 
+  /**
+   * Set existing worker to reuse (Phase 1 compatibility)
+   */
+  setWorker(worker: Worker): void {
+    this.worker = worker;
+    this.isUsingExistingWorker = true;
+    console.log("[WebSocketSystem] Using existing worker");
+  }
+
+  /**
+   * Handle worker message (called from main.ts worker.onmessage)
+   */
+  handleMessage(data: any): void {
+    this.handleWorkerMessage({ data } as MessageEvent);
+  }
+
   async initialize(context: SystemContext): Promise<void> {
     this.context = context;
 
-    // Create worker
-    this.worker = new Worker(new URL("../decode-worker.ts", import.meta.url), {
-      type: "module",
-    });
-
-    // Set up message handler
-    this.worker.onmessage = (e) => this.handleWorkerMessage(e);
+    // Only create worker if not already set (Phase 2)
+    if (!this.worker) {
+      this.worker = new Worker(new URL("../decode-worker.ts", import.meta.url), {
+        type: "module",
+      });
+      console.log("[WebSocketSystem] Created new worker");
+    }
 
     // Subscribe to state changes
     context.state.subscribe("connection:state", (state: ConnectionState) => {
@@ -183,12 +200,38 @@ export class WebSocketSystem implements System {
    * Toggle JPEG fallback mode
    */
   toggleJPEGFallback(enabled: boolean): void {
+    console.log(`[WebSocketSystem] toggleJPEGFallback(${enabled}) called`);
     if (this.worker) {
+      console.log(`[WebSocketSystem] Sending toggle-jpeg-fallback message to worker`);
       this.worker.postMessage({
         type: "toggle-jpeg-fallback",
         enabled,
       });
+    } else {
+      console.error(`[WebSocketSystem] Worker not available!`);
     }
+  }
+
+  /**
+   * Change encoder type on Backend (JPEG/H264)
+   * Sends control message to Renderer via Transport
+   */
+  changeEncoderType(encoderType: 'jpeg' | 'h264'): void {
+    if (!this.worker) {
+      console.error("[WebSocketSystem] Worker not initialized");
+      return;
+    }
+
+    // Map encoder type to format code (0=JPEG, 1=H264)
+    const formatCode = encoderType === 'jpeg' ? 0 : 1;
+
+    console.log(`[WebSocketSystem] Requesting encoder change to ${encoderType} (code=${formatCode})`);
+
+    // Send control message via worker
+    this.worker.postMessage({
+      type: "change-encoder",
+      encoderType: formatCode,
+    });
   }
 
   // ========================================================================
@@ -198,13 +241,39 @@ export class WebSocketSystem implements System {
   private handleWorkerMessage(e: MessageEvent): void {
     const msg = e.data;
 
+    // Only log non-frequent messages
+    if (msg.type !== 'frame-receive' && msg.type !== 'pure-decode-stats' && msg.type !== 'pong-received') {
+      console.log('[WebSocketSystem] Received worker message:', msg.type);
+    }
+
     switch (msg.type) {
+      case "frame": // Legacy decode-worker sends "frame" not "video-frame"
       case "video-frame":
+        console.log('[WebSocketSystem] Handling video frame:', msg.frameId, {
+          hasImage: !!msg.image,
+          hasDepth: !!msg.depth,
+          depthType: msg.depth?.constructor?.name
+        });
         this.handleVideoFrame(msg);
         break;
 
       case "ws-state":
         this.handleConnectionState(msg.state);
+        break;
+
+      case "frame-receive":
+        // Frame receive notification (for latency tracking)
+        console.log('[WebSocketSystem] Frame received:', msg.frameId);
+        break;
+
+      case "pure-decode-stats":
+        // Pure decode statistics (for performance monitoring)
+        console.log('[WebSocketSystem] Pure decode stats:', msg.pureFPS);
+        break;
+
+      case "pong-received":
+        // Clock sync pong (for latency tracking)
+        console.log('[WebSocketSystem] Pong received');
         break;
 
       case "decode-fps":
@@ -229,26 +298,101 @@ export class WebSocketSystem implements System {
         }
         break;
 
+      case "error":
+        console.error("[WebSocketSystem] Worker error:", msg.error);
+        break;
+
+      case "ws-ready":
+      case "ws-error":
+      case "ws-close":
+        // Connection state messages (handled elsewhere)
+        break;
+
       default:
         console.warn("[WebSocketSystem] Unknown message type:", msg.type);
     }
   }
 
   private handleVideoFrame(msg: any): void {
+    // Convert legacy decode-worker 'frame' message to VideoFrame format
+    let colorData: Uint8Array | undefined;
+    let depthData: Float32Array | undefined;
+    let colorBitmap: ImageBitmap | undefined;
+    let depthBitmap: ImageBitmap | undefined;
+    let depthRaw: Uint16Array | undefined;
+    let width: number;
+    let height: number;
+
+    if (msg.image) {
+      // decode-worker sends ImageBitmap
+      if (msg.image instanceof ImageBitmap) {
+        // H264 or JPEG mode: ImageBitmap format
+        colorBitmap = msg.image;
+        width = msg.image.width;
+        height = msg.image.height;
+
+        // Handle depth
+        if (msg.depth) {
+          if (msg.depth instanceof ImageBitmap) {
+            // H264 mode: depth as ImageBitmap
+            depthBitmap = msg.depth;
+          } else if (msg.depth instanceof Uint16Array) {
+            // JPEG mode: Float16 raw bytes - pass as-is without conversion
+            depthRaw = msg.depth;
+          } else if (msg.depth instanceof Uint8Array) {
+            // Fallback: Uint8Array grayscale
+            depthData = new Float32Array(msg.depth.length);
+            for (let i = 0; i < msg.depth.length; i++) {
+              depthData[i] = msg.depth[i] / 255.0; // Normalize
+            }
+          }
+        }
+      } else if (msg.image instanceof ImageData) {
+        // Legacy ImageData format (should not happen with current decode-worker)
+        const imageData = msg.image as ImageData;
+        width = imageData.width;
+        height = imageData.height;
+        colorData = new Uint8Array(imageData.data.buffer);
+      } else {
+        console.error('[WebSocketSystem] Unknown image type:', msg.image);
+        return;
+      }
+    } else {
+      // New format: already has colorData, depthData, width, height
+      colorData = msg.colorData;
+      depthData = msg.depthData;
+      colorBitmap = msg.colorBitmap;
+      depthBitmap = msg.depthBitmap;
+      depthRaw = msg.depthRaw;
+      width = msg.width;
+      height = msg.height;
+    }
+
     const frame: VideoFrame = {
       frameId: msg.frameId,
-      formatType: msg.formatType as FormatType,
-      colorData: msg.colorData,
-      depthData: msg.depthData,
-      width: msg.width,
-      height: msg.height,
+      formatType: (msg.formatType as FormatType) || FormatType.JPEG,
+      colorData,
+      depthData,
+      colorBitmap,
+      depthBitmap,
+      depthRaw,
+      width,
+      height,
       timestamps: {
-        client: msg.clientTimestamp || msg.clientSendTime,
-        server: msg.serverTimestamp || msg.serverReceiveTime,
-        renderStart: msg.renderStartTimestamp || msg.serverProcessEndTime,
-        encodeEnd: msg.encodeEndTimestamp || msg.serverSendTime,
+        client: msg.clientTimestamp || msg.clientSendTime || 0,
+        server: msg.serverTimestamp || msg.serverReceiveTime || 0,
+        renderStart: msg.renderStartTimestamp || msg.serverProcessEndTime || 0,
+        encodeEnd: msg.encodeEndTimestamp || msg.serverSendTime || 0,
       },
     };
+
+    console.log('[WebSocketSystem] Converted frame:', frame.frameId, frame.width, 'x', frame.height, {
+      hasColorBitmap: !!frame.colorBitmap,
+      hasDepthBitmap: !!frame.depthBitmap,
+      hasDepthRaw: !!frame.depthRaw,
+      hasColorData: !!frame.colorData,
+      hasDepthData: !!frame.depthData
+    });
 
     // Notify handlers
     this.videoFrameHandlers.forEach((handler) => {

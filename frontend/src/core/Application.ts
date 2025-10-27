@@ -59,7 +59,8 @@ export class Application {
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     renderer: THREE.WebGLRenderer,
-    controls?: any
+    controls?: any,
+    existingWorker?: Worker
   ): Promise<void> {
     console.log("[Application] Initializing with existing objects (Phase 1)...");
 
@@ -84,6 +85,12 @@ export class Application {
     this.systems.set("texture", this.textureManager);
     this.systems.set("camera", this.cameraController);
     this.systems.set("debug", this.debugSystem);
+
+    // Set existing worker before initialization
+    if (existingWorker && this.websocketSystem) {
+      this.websocketSystem.setWorker(existingWorker);
+      console.log("[Application] Using existing worker for WebSocketSystem");
+    }
 
     // Initialize all systems in parallel
     console.log("[Application] Initializing systems in parallel...");
@@ -148,8 +155,12 @@ export class Application {
   private setupEventListeners(): void {
     // Listen for video frames and update textures
     this.eventBus.on("frame:received", ({ data }) => {
+      console.log('[Application] frame:received event fired, frameId:', data.frameId);
       if (this.textureManager) {
+        console.log('[Application] Calling textureManager.updateFromVideoFrame()');
         this.textureManager.updateFromVideoFrame(data);
+      } else {
+        console.error('[Application] TextureManager not available!');
       }
     });
 

@@ -8,6 +8,7 @@ import asyncio
 from typing import Optional, Literal
 import numpy as np
 import os
+import struct
 from pathlib import Path
 
 from renderer.data_types import CameraFrame, RenderPayload
@@ -24,7 +25,9 @@ from renderer.scene_renderers.base import BaseSceneRenderer
 from renderer.encoders.base import BaseEncoder
 from renderer.utils.protocol import (
     parse_camera_frame, pack_render_payload,
-    is_control_message, parse_control_message, CONTROL_CMD_RESET_ENCODER
+    is_control_message, parse_control_message,
+    CONTROL_CMD_RESET_ENCODER, CONTROL_CMD_CHANGE_ENCODER,
+    FORMAT_JPEG, FORMAT_H264, FORMAT_RAW
 )
 from renderer.utils.frame_buffer import FrameBuffer, FIFOBuffer, LatestFrameBuffer
 
@@ -96,7 +99,8 @@ class RendererService:
                  camera_socket: str = "/run/ipc/camera.sock",
                  video_socket: str = "/run/ipc/video.sock",
                  save_debug_output: bool = False,
-                 debug_output_dir: str = "backend/renderer/output"):
+                 debug_output_dir: str = "backend/renderer/output",
+                 encoder_config: dict = None):
         """
         Initialize Renderer Service.
 
@@ -109,10 +113,12 @@ class RendererService:
             video_socket: Unix socket path for sending video data
             save_debug_output: Save rendered images for debugging
             debug_output_dir: Directory to save debug output
+            encoder_config: Configuration for dynamic encoder switching (optional)
         """
         self.scene_renderer = scene_renderer
         self.encoder = encoder
         self.renderer_config = renderer_config or {}
+        self.encoder_config = encoder_config or {}  # Save for dynamic switching
         self.camera_socket = camera_socket
         self.video_socket = video_socket
         self.save_debug_output = save_debug_output
@@ -232,12 +238,28 @@ class RendererService:
                     print(f"[CAMERA] Incomplete message: {len(data)} bytes")
                     continue
 
-                # Check if control message
+                # Check if control message (8 or 12 bytes)
                 if is_control_message(data):
+                    # Check if extended format (12 bytes)
+                    # First 8 bytes contain: magic (4) + command (4)
+                    # If extended, read remaining 4 bytes for param
+                    command_code = struct.unpack_from("<I", data, 4)[0]
+
+                    # Read remaining 4 bytes if this is CHANGE_ENCODER command
+                    if command_code == CONTROL_CMD_CHANGE_ENCODER:
+                        param_bytes = await self.camera_reader.read(4)
+                        if len(param_bytes) == 4:
+                            full_data = data + param_bytes
+                        else:
+                            print(f"[CAMERA] Warning: Expected 4 more bytes for param, got {len(param_bytes)}")
+                            full_data = data
+                    else:
+                        full_data = data
+
                     # Process control message
                     try:
-                        command = parse_control_message(data)
-                        await self._handle_control_message(command)
+                        command, param = parse_control_message(full_data)
+                        await self._handle_control_message(command, param)
                     except Exception as e:
                         print(f"[CAMERA] Control message error: {e}")
                     continue
@@ -315,6 +337,14 @@ class RendererService:
             try:
                 # Get camera from buffer
                 camera = await self.frame_buffer.get()
+
+                # Validate camera data (손상된 데이터 필터링)
+                if camera.width <= 0 or camera.width > 8192:
+                    print(f"[RENDER] Invalid width {camera.width}, skipping frame {camera.frame_id}")
+                    continue
+                if camera.height <= 0 or camera.height > 8192:
+                    print(f"[RENDER] Invalid height {camera.height}, skipping frame {camera.frame_id}")
+                    continue
 
                 # Adjust resolution to even numbers for H264 compatibility (NV12 format)
                 # This ensures encoder compatibility when frontend sends odd resolutions
@@ -440,12 +470,48 @@ class RendererService:
             if frame_id % 60 == 0 or frame_id < 3:
                 print(f"[DEBUG] Saved frame {frame_id}: raw={len(payload.data)} bytes")
 
-    async def _handle_control_message(self, command: int):
+    def _create_encoder(self, format_type: int) -> BaseEncoder:
+        """
+        Create encoder instance based on format type.
+
+        Args:
+            format_type: Encoder type (0=JPEG, 1=H264, 2=Raw)
+
+        Returns:
+            BaseEncoder instance
+
+        Raises:
+            ValueError: If unknown format type
+        """
+        if format_type == FORMAT_JPEG:
+            from renderer.encoders.jpeg import JpegEncoder
+            quality = self.encoder_config.get('jpeg_quality', 90)
+            print(f"[ENCODER FACTORY] Creating JPEG encoder (quality={quality})")
+            return JpegEncoder(quality=quality)
+
+        elif format_type == FORMAT_H264:
+            from renderer.encoders.h264 import H264Encoder
+            bitrate = self.encoder_config.get('h264_bitrate', 20_000_000)
+            fps = self.encoder_config.get('h264_fps', 60)
+            preset = self.encoder_config.get('h264_preset', 'P3')
+            print(f"[ENCODER FACTORY] Creating H264 encoder (bitrate={bitrate/1e6:.1f}Mbps, fps={fps}, preset={preset})")
+            return H264Encoder(bitrate=bitrate, fps=fps, preset=preset)
+
+        elif format_type == FORMAT_RAW:
+            from renderer.encoders.raw import RawEncoder
+            print("[ENCODER FACTORY] Creating Raw encoder")
+            return RawEncoder()
+
+        else:
+            raise ValueError(f"Unknown encoder format type: {format_type}")
+
+    async def _handle_control_message(self, command: int, param: int = 0):
         """
         Handle control message from Transport.
 
         Args:
             command: Control command code
+            param: Command parameter (e.g., encoder type for CONTROL_CMD_CHANGE_ENCODER)
         """
         if command == CONTROL_CMD_RESET_ENCODER:
             print("[CONTROL] Received encoder reset command")
@@ -467,6 +533,54 @@ class RendererService:
 
             except Exception as e:
                 print(f"[CONTROL] Encoder reset error: {e}")
+
+        elif command == CONTROL_CMD_CHANGE_ENCODER:
+            format_names = {FORMAT_JPEG: "JPEG", FORMAT_H264: "H264", FORMAT_RAW: "Raw"}
+            format_name = format_names.get(param, f"Unknown({param})")
+            print(f"[CONTROL] Received encoder change command: {format_name}")
+
+            try:
+                # Clear frame buffer (drop old frames from previous session)
+                self.frame_buffer.clear()
+                print("[CONTROL] Frame buffer cleared")
+
+                # Shutdown current encoder
+                old_encoder = self.encoder
+                await old_encoder.on_shutdown()
+                print(f"[CONTROL] Current encoder shut down")
+
+                # Force GPU memory release
+                del old_encoder
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    print(f"[CONTROL] GPU memory cache cleared")
+
+                # Force garbage collection
+                import gc
+                gc.collect()
+                print("[CONTROL] Garbage collection completed")
+
+                # Create new encoder
+                new_encoder = self._create_encoder(param)
+
+                # Initialize new encoder
+                if await new_encoder.on_init():
+                    # Success - replace encoder
+                    self.encoder = new_encoder
+                    print(f"[CONTROL] Encoder changed to {format_name} successfully")
+                else:
+                    # Failed - rollback to old encoder
+                    print(f"[CONTROL] ERROR: Failed to initialize new encoder ({format_name})")
+                    print("[CONTROL] Attempting to restore previous encoder...")
+                    if await self.encoder.on_init():
+                        print("[CONTROL] Previous encoder restored")
+                    else:
+                        print("[CONTROL] FATAL: Cannot restore previous encoder!")
+
+            except Exception as e:
+                print(f"[CONTROL] Encoder change error: {e}")
+                import traceback
+                traceback.print_exc()
 
         else:
             print(f"[CONTROL] Unknown control command: {command}")

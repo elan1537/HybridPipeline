@@ -147,7 +147,17 @@ interface DebugToggleMessage {
     enabled: boolean
 }
 
-self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage | PingMessage | LatencyMessage | FPSMeasurementStartMessage | FPSMeasurementStopMessage | DebugToggleMessage>) => {
+interface ChangeEncoderMessage {
+    type: 'change-encoder'
+    encoderType: number  // 0=JPEG, 1=H264
+}
+
+interface ToggleJpegFallbackMessage {
+    type: 'toggle-jpeg-fallback'
+    enabled: boolean
+}
+
+self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage | PingMessage | LatencyMessage | FPSMeasurementStartMessage | FPSMeasurementStopMessage | DebugToggleMessage | ChangeEncoderMessage | ToggleJpegFallbackMessage>) => {
     const data = evt.data
 
     switch (data.type) {
@@ -196,6 +206,17 @@ self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMes
         case 'debug-toggle':
             // Debug logging 토글
             debug.setDebugEnabled(data.enabled)
+            break
+        case 'change-encoder':
+            // Encoder 변경 요청
+            sendEncoderChange(data.encoderType)
+            break
+        case 'toggle-jpeg-fallback':
+            // JPEG fallback 모드 토글
+            const oldValue = jpegFallback;
+            jpegFallback = data.enabled;
+            console.log(`[Worker] toggle-jpeg-fallback: ${oldValue} → ${jpegFallback}`);
+            debug.logWorker(`JPEG fallback mode: ${jpegFallback ? 'enabled' : 'disabled'}`);
             break
     }
 }
@@ -331,6 +352,27 @@ function sendPing(clientTime: number) {
     typeView[0] = 255; // ping message type
     timeView[0] = clientTime;
 
+    ws.send(buffer);
+}
+
+function sendEncoderChange(encoderType: number) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.error('[Worker] Cannot send encoder change: WebSocket not open');
+        return;
+    }
+
+    // Control message: magic(4) + command(4) + param(4) = 12 bytes
+    const buffer = new ArrayBuffer(12);
+    const view = new DataView(buffer);
+
+    const MAGIC = 0xDEADBEEF;
+    const CONTROL_CMD_CHANGE_ENCODER = 2;
+
+    view.setUint32(0, MAGIC, true);                        // magic (little-endian)
+    view.setUint32(4, CONTROL_CMD_CHANGE_ENCODER, true);   // command
+    view.setUint32(8, encoderType, true);                  // param (0=JPEG, 1=H264)
+
+    console.log(`[Worker] Sending encoder change control message: type=${encoderType} (0=JPEG, 1=H264)`);
     ws.send(buffer);
 }
 
@@ -508,10 +550,17 @@ async function initWebSocket(wsURL: string) {
             }
         }
 
+        // Debug: Log jpegFallback state every 60 frames
+        const shouldLogState = (arrBuf.byteLength % 60 === 0);
+        if (shouldLogState) {
+            console.log(`[Worker] jpegFallback=${jpegFallback}, message size=${arrBuf.byteLength}`);
+        }
+
         if (jpegFallback) {
             const parseResult = parseJPEGMessage(arrBuf);
             if (!parseResult) {
-                debug.error("Failed to parse JPEG message");
+                // Format mismatch: expected JPEG, got H264 (Backend transition pending)
+                console.warn("[Worker] Expected JPEG format, received H264 - Backend encoder transition pending, skipping frame");
                 return;
             }
 
@@ -554,7 +603,8 @@ async function initWebSocket(wsURL: string) {
         } else {
             const parseResult = parseH264Message(arrBuf);
             if (!parseResult) {
-                debug.error("Failed to parse H264 message");
+                // Format mismatch: expected H264, got JPEG (Backend transition pending)
+                debug.warn("[Worker] Expected H264 format, received JPEG - Backend encoder transition pending, skipping frame");
                 return;
             }
 

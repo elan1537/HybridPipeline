@@ -179,6 +179,30 @@ class WebSocketAdapter(BaseFrontendAdapter):
                         self.height = height
                     continue
 
+                # Control message (8 or 12 bytes)
+                elif len(raw) == 8 or len(raw) == 12:
+                    # Control message for Renderer (e.g., encoder change)
+                    # Just forward to camera_queue with special marker
+                    print(f"[WebSocket] Received control message ({len(raw)} bytes)")
+
+                    # Create a special "control" camera frame with control data
+                    # Use a marker in frame_id to indicate control message
+                    control_frame = type('ControlFrame', (), {
+                        'is_control': True,
+                        'control_data': raw
+                    })()
+
+                    try:
+                        self.camera_queue.put_nowait(control_frame)
+                    except asyncio.QueueFull:
+                        # Drop oldest frame
+                        try:
+                            self.camera_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                        self.camera_queue.put_nowait(control_frame)
+                    continue
+
                 # Camera data (160 bytes)
                 elif len(raw) == 160:
                     server_timestamp = time.time() * 1000.0  # ms

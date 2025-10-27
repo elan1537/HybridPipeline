@@ -121,13 +121,29 @@ export class TextureManager implements System {
    * Update textures from video frame
    */
   updateFromVideoFrame(frame: VideoFrame): void {
+    console.log("[TextureManager] updateFromVideoFrame called:", frame.frameId, frame.width, 'x', frame.height, {
+      hasColorBitmap: !!frame.colorBitmap,
+      hasDepthBitmap: !!frame.depthBitmap,
+      hasDepthRaw: !!frame.depthRaw,
+      hasColorData: !!frame.colorData,
+      hasDepthData: !!frame.depthData
+    });
+
     if (!this.colorTexture || !this.depthTexture) {
       console.error("[TextureManager] Textures not initialized");
       return;
     }
 
     // Update color texture
-    if (frame.colorData) {
+    // Priority 1: Use ImageBitmap (GPU optimized, from decode-worker)
+    if (frame.colorBitmap) {
+      console.log("[TextureManager] Updating color texture from ImageBitmap");
+      this.colorTexture.image = frame.colorBitmap;
+      this.colorTexture.needsUpdate = true;
+    }
+    // Priority 2: Use raw color data (fallback)
+    else if (frame.colorData) {
+      console.log("[TextureManager] Updating color texture from colorData, length:", frame.colorData.length);
       const colorImage = new ImageData(
         new Uint8ClampedArray(frame.colorData),
         frame.width,
@@ -147,16 +163,69 @@ export class TextureManager implements System {
     }
 
     // Update depth texture
-    if (frame.depthData) {
-      if (this.isJpegMode) {
-        // JPEG mode: Float16 data
-        const depthArray = new Uint16Array(frame.depthData.buffer);
+    // Priority 1: Use raw Float16 data (JPEG mode)
+    if (frame.depthRaw) {
+      console.log("[TextureManager] Updating depth texture from depthRaw (Float16), size:", frame.depthRaw.length);
+
+      // Verify texture type matches
+      if (this.depthTexture.type !== THREE.HalfFloatType) {
+        console.warn("[TextureManager] Depth texture type mismatch! Expected HalfFloatType, got", this.depthTexture.type);
+      }
+
+      // Copy data into existing array (don't replace reference)
+      const currentData = this.depthTexture.image.data as Uint16Array;
+      if (currentData.length !== frame.depthRaw.length) {
+        console.warn("[TextureManager] Depth size mismatch:", currentData.length, "vs", frame.depthRaw.length);
+        // Recreate texture with correct size
+        this.depthTexture.image.data = new Uint16Array(frame.depthRaw);
+      } else {
+        currentData.set(frame.depthRaw);
+      }
+
+      this.depthTexture.needsUpdate = true;
+    }
+    // Priority 2: Use ImageBitmap (H264 mode with depth as ImageBitmap)
+    else if (frame.depthBitmap) {
+      console.log("[TextureManager] Updating depth texture from ImageBitmap");
+      // Convert ImageBitmap to canvas for DataTexture
+      const canvas = document.createElement("canvas");
+      canvas.width = frame.depthBitmap.width;
+      canvas.height = frame.depthBitmap.height;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(frame.depthBitmap, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        // Use red channel as depth
+        const depthArray = new Uint8Array(canvas.width * canvas.height);
+        for (let i = 0; i < depthArray.length; i++) {
+          depthArray[i] = imageData.data[i * 4]; // Red channel
+        }
+
+        // Copy into existing array
+        const currentData = this.depthTexture.image.data as Uint8Array;
+        if (currentData.length !== depthArray.length) {
+          this.depthTexture.image.data = depthArray;
+        } else {
+          currentData.set(depthArray);
+        }
+
+        this.depthTexture.needsUpdate = true;
+      }
+    }
+    // Priority 3: Use converted depth data (fallback)
+    else if (frame.depthData) {
+      console.log("[TextureManager] Updating depth texture from depthData (fallback)");
+      // Fallback: already converted Float32Array
+      const depthArray = new Uint8Array(frame.depthData.buffer);
+
+      // Copy into existing array
+      const currentData = this.depthTexture.image.data as Uint8Array;
+      if (currentData.length !== depthArray.length) {
         this.depthTexture.image.data = depthArray;
       } else {
-        // H264 mode: Uint8 data
-        const depthArray = new Uint8Array(frame.depthData.buffer);
-        this.depthTexture.image.data = depthArray;
+        currentData.set(depthArray);
       }
+
       this.depthTexture.needsUpdate = true;
     }
 
@@ -188,11 +257,15 @@ export class TextureManager implements System {
    * Set JPEG mode
    */
   setJpegMode(enabled: boolean): void {
+    console.log(`[TextureManager] setJpegMode(${enabled}) called, current mode: ${this.isJpegMode}`);
+
     if (this.isJpegMode === enabled) {
+      console.log(`[TextureManager] Already in ${enabled ? 'JPEG' : 'H264'} mode, skipping`);
       return;
     }
 
     this.isJpegMode = enabled;
+    console.log(`[TextureManager] Switching to ${enabled ? 'JPEG' : 'H264'} mode`);
 
     // Recreate depth texture with correct format
     if (this.depthTexture) {
@@ -206,6 +279,7 @@ export class TextureManager implements System {
           THREE.RedFormat,
           THREE.HalfFloatType
         );
+        console.log(`[TextureManager] Created JPEG depth texture (Uint16Array, HalfFloatType): ${this.width}x${this.height}`);
       } else {
         this.depthTexture = new THREE.DataTexture(
           new Uint8Array(this.width * this.height),
@@ -214,6 +288,7 @@ export class TextureManager implements System {
           THREE.RedFormat,
           THREE.UnsignedByteType
         );
+        console.log(`[TextureManager] Created H264 depth texture (Uint8Array, UnsignedByteType): ${this.width}x${this.height}`);
       }
 
       this.depthTexture.minFilter = THREE.NearestFilter;
@@ -221,6 +296,7 @@ export class TextureManager implements System {
 
       if (this.context) {
         this.context.renderingContext.registerTexture("wsDepth", this.depthTexture);
+        console.log(`[TextureManager] Registered new depth texture with RenderingContext`);
       }
     }
   }
