@@ -1427,166 +1427,19 @@ function sendCameraSnapshot(tag?: string) {
     }
 }
 
-function renderLoop() {
-    requestAnimationFrame(renderLoop)
-    const deltaTime = clock.getDelta();
-    controls.update(deltaTime);
-
-    // CP8: Update new architecture systems
-    if (USE_NEW_ARCHITECTURE && app) {
-        app.getState().set('frame:counter', frameCounter);
-        app.getState().set('frame:timeIndex', currentTimeIndex);
-    }
-
-    // console.log(fov, camera.aspect, near, far)
-
-    const now = performance.now()
-    const elapsed = now - renderStart;
-
-    if (isPlaying) {
-        frameCounter = (frameCounter + 1) % 300;  // 0~299 loop
-        currentTimeIndex = frameCounter / 299.0;  // Normalize to 0.0~1.0
-    }
-
-    // 최소 1초 경과 후 FPS 계산 (너무 짧은 간격으로 인한 오류 방지)
-    if (elapsed > 1000) {
-        const duration = elapsed / 1000;
-        const fps = renderCnt / duration;
-
-        // FPS 값 검증 및 표시
-        if (fps > 0 && fps <= 240 && isFinite(fps)) {
-            renderFpsDiv.textContent = `Render FPS: ${fps.toFixed(2)}`;
-        } else {
-            debug.warn(`Render FPS: Invalid value ${fps.toFixed(2)}, keeping previous display`);
-        }
-
-        renderCnt = 0;
-        renderStart = now;
-    }
-
-    // Adaptive camera update: only send if camera has moved significantly
-    if (now - lastCameraUpdateTime > cameraUpdateInterval) {
-        const positionDeltaSquared = camera.position.distanceToSquared(lastCameraPosition);
-        const targetDeltaSquared = controls.target.distanceToSquared(lastCameraTarget);
-
-        // if (positionDeltaSquared > cameraPositionThresholdSquared || targetDeltaSquared > cameraTargetThresholdSquared) {
-        sendCameraSnapshot('render');
-
-        // CP8: Send camera frame via new architecture
-        if (USE_NEW_ARCHITECTURE && app) {
-            app.sendCameraFrame();
-        }
-
-        lastCameraPosition.copy(camera.position);
-        lastCameraTarget.copy(controls.target);
-        lastCameraUpdateTime = now;
-        if (ENABLE_PERFORMANCE_TRACKING) cameraUpdateCount++;
-        // }
-    }
-    robot_animation();
-
-    renderCnt++;
-
-    // Apply texture updates only when needed - this is the actual GPU upload point
-    const hasTextureUpdates = wsColorTextureNeedsUpdate || wsDepthTextureNeedsUpdate;
-    if (hasTextureUpdates) {
-        // 실제 프레임 처리 시작 시점 기록 (GPU 텍스처 업로드 직전)
-        recordFrameProcessingStart();
-    }
-
-    if (wsColorTextureNeedsUpdate) {
-        wsColorTexture.needsUpdate = true;
-        wsColorTextureNeedsUpdate = false;
-        if (ENABLE_PERFORMANCE_TRACKING) textureUpdateCount++;
-    }
-    if (wsDepthTextureNeedsUpdate) {
-        wsDepthTexture.needsUpdate = true;
-        wsDepthTextureNeedsUpdate = false;
-        if (ENABLE_PERFORMANCE_TRACKING) textureUpdateCount++;
-    }
-
-    if (hasTextureUpdates) {
-        // 실제 프레임 처리 완료 시점 기록 (GPU 텍스처 업로드 완료 후)
-        recordFrameProcessingComplete();
-    }
-
-    // Optimized rendering based on current mode
-    if (depthDebugCheckbox.checked) {
-        // Depth debug mode: render local scene to target, then debug scene
-        renderer.setRenderTarget(localRenderTarget);
-        if (ENABLE_PERFORMANCE_TRACKING) renderTargetSwitchCount++;
-        renderer.render(localScene, camera);
-        renderer.setRenderTarget(null);
-        if (ENABLE_PERFORMANCE_TRACKING) renderTargetSwitchCount++;
-        renderer.render(debugScene, debugCamera);
-    } else {
-        switch (currentRenderMode) {
-            case RenderMode.FUSION:
-                // Fusion mode: render local to target, then fusion scene
-                renderer.setRenderTarget(localRenderTarget);
-                if (ENABLE_PERFORMANCE_TRACKING) renderTargetSwitchCount++;
-                renderer.render(localScene, camera);
-                renderer.setRenderTarget(null);
-                if (ENABLE_PERFORMANCE_TRACKING) renderTargetSwitchCount++;
-                renderer.render(fusionScene, orthoCamera);
-                break;
-            case RenderMode.GAUSSIAN_ONLY:
-                // Gaussian only: skip local rendering, only render gaussian scene
-                renderer.render(gaussianOnlyScene, gaussianOnlyCamera);
-                break;
-            case RenderMode.LOCAL_ONLY:
-                // Local only: render local scene directly to screen
-                renderer.render(localScene, camera);
-                break;
-            case RenderMode.DEPTH_FUSION:
-                // Depth fusion mode: render local to target, then depth fusion scene
-                renderer.setRenderTarget(localRenderTarget);
-                if (ENABLE_PERFORMANCE_TRACKING) renderTargetSwitchCount++;
-                renderer.render(localScene, camera);
-                renderer.setRenderTarget(null);
-                if (ENABLE_PERFORMANCE_TRACKING) renderTargetSwitchCount++;
-                renderer.render(depthFusionScene, depthFusionCamera);
-                break;
-        }
-    }
-
-    // Performance logging (only in debug mode)
-    if (ENABLE_PERFORMANCE_TRACKING && now - lastPerformanceLogTime > performanceLogInterval) {
-        const fps = renderCnt / ((now - renderStart) / 1000);
-        debug.logMain(`[Performance] FPS: ${fps.toFixed(1)} | Texture Updates: ${textureUpdateCount} | Camera Updates: ${cameraUpdateCount} | Render Target Switches: ${renderTargetSwitchCount} | Mode: ${currentRenderMode}`);
-
-        // Reset counters
-        textureUpdateCount = 0;
-        cameraUpdateCount = 0;
-        renderTargetSwitchCount = 0;
-        lastPerformanceLogTime = now;
-    }
-
-    // 렌더링 완료 시점 기록 및 레이턴시 통계 업데이트
-    updateLatencyStats();
-
-    // FPS 측정 중이면 진행률 업데이트
-    updateFPSTestUI();
-
-    // Camera debug info 업데이트
-    updateCameraDebugInfo();
-}
-
-
-// CP4: New architecture instance (Phase 1: runs in parallel with legacy)
+// Application instance
 let app: Application | null = null;
 
 initScene().then(async () => {
     renderStart = performance.now()
-    renderLoop()
 
     // UI 컨트롤러 활성화
     debug.logMain('UI Controller initialized:', uiController.isVisible())
 
-    // CP4: Initialize new architecture in parallel (non-breaking)
+    // Initialize new architecture
     if (USE_NEW_ARCHITECTURE) {
         try {
-            debug.logMain('[CP4] Initializing new architecture...');
+            debug.logMain('[Refactored] Initializing Application...');
 
             app = new Application({
                 canvas: renderer.domElement,
@@ -1597,17 +1450,16 @@ initScene().then(async () => {
                 debugMode: true,
             });
 
-            // Phase 1: Wrap existing objects (non-breaking) with existing worker
+            // Wrap existing objects with existing worker
             await app.initializeWithExistingObjects(
                 localScene,
                 camera,
                 renderer,
                 controls,
-                worker // CP4.5: Pass existing worker
+                worker
             );
 
-            debug.logMain('[CP4] New architecture initialized successfully');
-            debug.logMain('[CP4] Systems are now running in parallel with legacy code');
+            debug.logMain('[Refactored] Application initialized successfully');
 
             // CP7: Connect TextureManager textures to rendering
             if (USE_NEW_TEXTURE_MANAGER && app) {
@@ -1645,8 +1497,50 @@ initScene().then(async () => {
                     }
                 }
             }
+
+            // Configure RenderingSystem with scenes and cameras
+            const renderingSystem = app.getRenderingSystem();
+            if (renderingSystem) {
+                renderingSystem.configure({
+                    localScene,
+                    fusionScene,
+                    debugScene,
+                    gaussianOnlyScene,
+                    depthFusionScene,
+                    camera,
+                    orthoCamera,
+                    debugCamera,
+                    gaussianOnlyCamera,
+                    depthFusionCamera,
+                    localRenderTarget,
+                    controls,
+                    clock,
+                    renderFpsDiv,
+                    depthDebugCheckbox,
+                    // Camera update callback - sends data to server
+                    onCameraUpdate: () => {
+                        sendCameraSnapshot('render');
+                        if (app) {
+                            app.sendCameraFrame();
+                        }
+                    },
+                    // Per-frame update callback
+                    onUpdate: () => {
+                        robot_animation();
+                        updateLatencyStats();
+                        updateFPSTestUI();
+                        updateCameraDebugInfo();
+                    },
+                });
+                debug.logMain('[Refactored] RenderingSystem configured');
+            }
+
+            // Start the render loop
+            app.start();
+            debug.logMain('[Refactored] Render loop started');
+
         } catch (error) {
-            console.error('[CP4] Failed to initialize new architecture:', error);
+            console.error('[Refactored] Failed to initialize:', error);
         }
     }
 })

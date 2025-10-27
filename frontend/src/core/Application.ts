@@ -13,6 +13,7 @@ import { WebSocketSystem } from "../systems/WebSocketSystem";
 import { TextureManager } from "../systems/TextureManager";
 import { CameraController } from "../systems/CameraController";
 import { DebugSystem } from "../systems/DebugSystem";
+import { RenderingSystem } from "../systems/RenderingSystem";
 
 export class Application {
   // Core components
@@ -26,6 +27,7 @@ export class Application {
   private textureManager: TextureManager | null = null;
   private cameraController: CameraController | null = null;
   private debugSystem: DebugSystem | null = null;
+  private renderingSystem: RenderingSystem | null = null;
 
   // Render loop
   private clock: THREE.Clock = new THREE.Clock();
@@ -79,12 +81,14 @@ export class Application {
     this.textureManager = new TextureManager();
     this.cameraController = new CameraController();
     this.debugSystem = new DebugSystem();
+    this.renderingSystem = new RenderingSystem();
 
     // Register systems
     this.systems.set("websocket", this.websocketSystem);
     this.systems.set("texture", this.textureManager);
     this.systems.set("camera", this.cameraController);
     this.systems.set("debug", this.debugSystem);
+    this.systems.set("rendering", this.renderingSystem);
 
     // Set existing worker before initialization
     if (existingWorker && this.websocketSystem) {
@@ -253,12 +257,12 @@ export class Application {
 
   /**
    * Render the scene
-   * Note: In Phase 1, this is a no-op since legacy code handles rendering
-   * In Phase 2, this will handle all rendering
    */
   private render(): void {
-    // Phase 1: No-op, legacy code handles rendering
-    // Phase 2: Implement full rendering pipeline here
+    // Delegate to RenderingSystem if configured
+    if (this.renderingSystem) {
+      this.renderingSystem.render();
+    }
   }
 
   // ========================================================================
@@ -343,6 +347,10 @@ export class Application {
 
   getDebugSystem(): DebugSystem | null {
     return this.debugSystem;
+  }
+
+  getRenderingSystem(): RenderingSystem | null {
+    return this.renderingSystem;
   }
 
   getRenderingContext(): RenderingContext | null {
