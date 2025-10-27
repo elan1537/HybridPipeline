@@ -10,8 +10,9 @@ import { debug } from './debug-logger';
 import { Application } from './core/Application';
 import { RenderMode as NewRenderMode } from './types';
 
-// Feature flag: Enable new architecture (non-breaking, runs alongside legacy)
-const USE_NEW_ARCHITECTURE = true; // Set to false to disable
+// Feature flags
+const USE_NEW_ARCHITECTURE = true; // CP4: Enable new architecture
+const USE_NEW_TEXTURE_MANAGER = true; // CP7: Use TextureManager textures for rendering
 
 import fusionVertexShader from './shaders/fusionVertexShader.vs?raw';
 import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
@@ -1540,6 +1541,43 @@ initScene().then(async () => {
 
             debug.logMain('[CP4] New architecture initialized successfully');
             debug.logMain('[CP4] Systems are now running in parallel with legacy code');
+
+            // CP7: Connect TextureManager textures to rendering
+            if (USE_NEW_TEXTURE_MANAGER && app) {
+                const texManager = app.getTextureManager();
+                if (texManager) {
+                    const newColorTexture = texManager.getColorTexture();
+                    const newDepthTexture = texManager.getDepthTexture();
+
+                    if (newColorTexture && newDepthTexture) {
+                        // Update all shader materials to use new textures
+                        if (fusionMaterial) {
+                            fusionMaterial.uniforms.wsColorSampler.value = newColorTexture;
+                            fusionMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
+                            debug.logMain('[CP7] FusionMaterial updated with new textures');
+                        }
+
+                        if (debugMaterial) {
+                            debugMaterial.uniforms.wsColorSampler.value = newColorTexture;
+                            debugMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
+                            debug.logMain('[CP7] DebugMaterial updated with new textures');
+                        }
+
+                        if (gaussianOnlyMaterial) {
+                            gaussianOnlyMaterial.uniforms.wsColorSampler.value = newColorTexture;
+                            debug.logMain('[CP7] GaussianOnlyMaterial updated with new texture');
+                        }
+
+                        if (depthFusionMaterial) {
+                            depthFusionMaterial.uniforms.wsColorSampler.value = newColorTexture;
+                            depthFusionMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
+                            debug.logMain('[CP7] DepthFusionMaterial updated with new textures');
+                        }
+
+                        debug.logMain('[CP7] All materials now using TextureManager textures');
+                    }
+                }
+            }
         } catch (error) {
             console.error('[CP4] Failed to initialize new architecture:', error);
         }
