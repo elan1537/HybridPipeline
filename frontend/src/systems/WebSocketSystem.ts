@@ -132,23 +132,27 @@ export class WebSocketSystem implements System {
    * Send camera frame to server
    */
   sendCameraFrame(frame: CameraFrame): void {
+    console.log(`[WebSocketSystem] sendCameraFrame() ENTRY - frameId=${frame.frameId}, worker=${!!this.worker}, state=${this.currentState}`);
+
     if (!this.worker) {
       console.error("[WebSocketSystem] Worker not initialized");
       return;
     }
 
     if (this.currentState !== ConnectionState.Connected) {
+      console.warn(`[WebSocketSystem] Cannot send camera frame: not connected (state=${this.currentState})`);
       return;
     }
 
+    // Log only first frame to verify sending is working
+    console.log(`[WebSocketSystem] Sending camera frame ${frame.frameId}`);
+    if (frame.frameId % 60 === 0) {
+      console.log(`[WebSocketSystem] Frame ${frame.frameId} sent (logging every 60th frame)`);
+    }
+
     this.worker.postMessage({
-      type: "send-camera",
-      eye: frame.eye,
-      target: frame.target,
-      intrinsics: frame.intrinsics,
-      frameId: frame.frameId,
-      timestamp: frame.timestamp,
-      timeIndex: frame.timeIndex,
+      type: "camera",  // Worker expects "camera" not "send-camera"
+      frame: frame
     });
 
     if (this.context) {
@@ -247,7 +251,7 @@ export class WebSocketSystem implements System {
     }
 
     switch (msg.type) {
-      case "frame": // Legacy decode-worker sends "frame" not "video-frame"
+      case "frame": // Legacy decode-worker sends "frame"
       case "video-frame":
         console.log('[WebSocketSystem] Handling video frame:', msg.frameId, {
           hasImage: !!msg.image,
@@ -303,9 +307,18 @@ export class WebSocketSystem implements System {
         break;
 
       case "ws-ready":
+        console.log("[WebSocketSystem] Connection ready");
+        this.handleConnectionState("open");
+        break;
+
       case "ws-error":
+        console.log("[WebSocketSystem] Connection error");
+        this.handleConnectionState("error");
+        break;
+
       case "ws-close":
-        // Connection state messages (handled elsewhere)
+        console.log("[WebSocketSystem] Connection closed");
+        this.handleConnectionState("closed");
         break;
 
       default:
@@ -314,6 +327,7 @@ export class WebSocketSystem implements System {
   }
 
   private handleVideoFrame(msg: any): void {
+    console.log("handleVideoFrame")
     // Convert legacy decode-worker 'frame' message to VideoFrame format
     let colorData: Uint8Array | undefined;
     let depthData: Float32Array | undefined;
@@ -431,6 +445,10 @@ export class WebSocketSystem implements System {
       default:
         connectionState = ConnectionState.Disconnected;
     }
+
+    // Update internal state
+    this.currentState = connectionState;
+    console.log(`[WebSocketSystem] State updated: "${state}" -> ${connectionState} (currentState=${this.currentState})`);
 
     if (this.context) {
       this.context.state.set("connection:state", connectionState);

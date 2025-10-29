@@ -37,13 +37,11 @@ export interface RenderingConfig {
     controls: OrbitControls;
     clock: THREE.Clock;
 
-    // UI elements
-    renderFpsDiv: HTMLElement;
-    depthDebugCheckbox: HTMLInputElement;
-
     // Callbacks
     onCameraUpdate?: () => void;
     onUpdate?: () => void;  // Called every frame
+
+    // UI elements removed - now handled by UISystem
 }
 
 export class RenderingSystem implements System {
@@ -81,7 +79,7 @@ export class RenderingSystem implements System {
     configure(config: RenderingConfig): void {
         this.config = config;
         this.renderStart = performance.now();
-        debug.logMain('[RenderingSystem] Configured');
+        console.log('[RenderingSystem] Configured with onCameraUpdate:', !!config.onCameraUpdate);
     }
 
     /**
@@ -96,6 +94,11 @@ export class RenderingSystem implements System {
      * Update system state (called by Application.update())
      */
     update(deltaTime: number): void {
+        if (!this.config) {
+            console.warn('[RenderingSystem] update() called but not configured!');
+            return;
+        }
+
         // Update controls
         this.config.controls.update(deltaTime);
 
@@ -113,8 +116,10 @@ export class RenderingSystem implements System {
             const duration = elapsed / 1000;
             const fps = this.renderCnt / duration;
 
+            // FPS display removed - now handled by UISystem.updateRenderFPS()
+            // This tracking is kept for internal monitoring only
             if (fps > 0 && fps <= 240 && isFinite(fps)) {
-                this.config.renderFpsDiv.textContent = `Render FPS: ${fps.toFixed(2)}`;
+                debug.logMain(`[RenderingSystem] Render FPS: ${fps.toFixed(2)}`);
             }
 
             this.renderCnt = 0;
@@ -122,14 +127,18 @@ export class RenderingSystem implements System {
         }
 
         // Camera update check
-        if (now - this.lastCameraUpdateTime > this.cameraUpdateInterval) {
+        const timeSinceLastUpdate = now - this.lastCameraUpdateTime;
+        if (timeSinceLastUpdate > this.cameraUpdateInterval) {
             this.lastCameraPosition.copy(this.config.camera.position);
             this.lastCameraTarget.copy(this.config.controls.target);
             this.lastCameraUpdateTime = now;
 
             // Send camera frame to server
             if (this.config.onCameraUpdate) {
+                console.log(`[RenderingSystem] Calling onCameraUpdate (interval=${timeSinceLastUpdate.toFixed(1)}ms)`);
                 this.config.onCameraUpdate();
+            } else {
+                debug.logMain('[RenderingSystem] WARNING: onCameraUpdate callback not set!');
             }
 
             // Emit camera update event
@@ -150,13 +159,9 @@ export class RenderingSystem implements System {
      */
     render(): void {
         this.renderCnt++;
-        if (this.config.depthDebugCheckbox.checked) {
-            // Depth debug mode
-            this.renderer.setRenderTarget(this.config.localRenderTarget);
-            this.renderer.render(this.config.localScene, this.config.camera);
-            this.renderer.setRenderTarget(null);
-            this.renderer.render(this.config.debugScene, this.config.debugCamera);
-        } else {
+        // Depth debug checkbox removed - now controlled by currentRenderMode
+        // If depth debug is needed, it should be added as a separate RenderMode
+        {
             switch (this.currentRenderMode) {
                 case RenderMode.FUSION:
                     this.renderer.setRenderTarget(this.config.localRenderTarget);

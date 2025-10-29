@@ -6,7 +6,7 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons";
-import { System, SystemContext, CameraMode, CameraFrame } from "../types";
+import { System, SystemContext, CameraMode, CameraFrame, CameraConfig } from "../types";
 
 export class CameraController implements System {
   readonly name = "camera";
@@ -15,6 +15,13 @@ export class CameraController implements System {
   private camera: THREE.PerspectiveCamera | null = null;
   private controls: OrbitControls | null = null;
   private mode: CameraMode = CameraMode.Orbit;
+
+  // Camera configuration
+  private config: CameraConfig = {
+    fov: 80,
+    near: 0.3,
+    far: 100,
+  };
 
   // Adaptive camera update tracking
   private lastPosition: THREE.Vector3 = new THREE.Vector3();
@@ -35,6 +42,20 @@ export class CameraController implements System {
     // Get camera and controls from rendering context
     this.camera = context.renderingContext.camera;
     this.controls = context.renderingContext.controls;
+
+    // Extract configuration from existing camera
+    if (this.camera) {
+      this.config.fov = this.camera.fov;
+      this.config.near = this.camera.near;
+      this.config.far = this.camera.far;
+      this.config.aspect = this.camera.aspect;
+
+      // Check if Application provided a cameraConfig
+      const appCameraConfig = context.state.get("camera:config");
+      if (appCameraConfig) {
+        console.log("[CameraController] Application camera config detected:", appCameraConfig);
+      }
+    }
 
     // Get render resolution from state
     this.renderWidth = context.state.getOrDefault("rendering:width", 1280);
@@ -57,7 +78,12 @@ export class CameraController implements System {
       this.lastTarget.copy(this.controls.target);
     }
 
-    console.log("[CameraController] Initialized");
+    console.log("[CameraController] Initialized with config:", {
+      fov: this.config.fov,
+      near: this.config.near,
+      far: this.config.far,
+      aspect: this.config.aspect
+    });
   }
 
   update(deltaTime: number): void {
@@ -219,38 +245,36 @@ export class CameraController implements System {
 
   /**
    * Get camera frame for sending to server
-   * Uses the same intrinsics calculation as legacy code
+   * Protocol v2: Direct matrix transmission
+   *
+   * - view: camera.matrixWorldInverse (world → camera transform)
+   * - projection: camera.projectionMatrix (camera → clip transform)
+   * - intrinsics: getCameraIntrinsics() (pixel-space, distortion-free)
+   *
+   * @param timeIndex Time index for dynamic gaussians (0.0-1.0)
    */
   getCameraFrame(timeIndex: number = 0): CameraFrame {
-    if (!this.camera || !this.controls) {
-      return {
-        eye: new Float32Array(3),
-        target: new Float32Array(3),
-        intrinsics: new Float32Array(9),
-        frameId: this.frameId++,
-        timestamp: performance.now(),
-        timeIndex,
-      };
+    if (!this.camera) {
+      throw new Error('[CameraController] getCameraFrame: Camera not initialized');
     }
 
-    const eye = new Float32Array([
-      this.camera.position.x,
-      this.camera.position.y,
-      this.camera.position.z,
-    ]);
+    // View matrix: world → camera transform (matrixWorldInverse)
+    const view = new Float32Array(
+      this.camera.matrixWorldInverse.toArray()
+    );
 
-    const target = new Float32Array([
-      this.controls.target.x,
-      this.controls.target.y,
-      this.controls.target.z,
-    ]);
+    // Projection matrix: camera → clip transform
+    const projection = new Float32Array(
+      this.camera.projectionMatrix.toArray()
+    );
 
-    // Use the legacy intrinsics calculation method
+    // Intrinsics: pixel-space camera parameters (distortion-free)
+    // This uses the legacy calculation to match Gaussian training parameters
     const intrinsics = new Float32Array(this.getCameraIntrinsics());
 
     return {
-      eye,
-      target,
+      view,
+      projection,
       intrinsics,
       frameId: this.frameId++,
       timestamp: performance.now(),
@@ -352,5 +376,92 @@ export class CameraController implements System {
 
   getRenderResolution(): { width: number; height: number } {
     return { width: this.renderWidth, height: this.renderHeight };
+  }
+
+  // ========================================================================
+  // Camera Configuration
+  // ========================================================================
+
+  /**
+   * Get camera configuration
+   */
+  getConfig(): CameraConfig {
+    return { ...this.config };
+  }
+
+  /**
+   * Update camera parameters
+   */
+  updateCameraParams(params: Partial<CameraConfig>): void {
+    if (!this.camera) {
+      console.warn("[CameraController] Camera not available");
+      return;
+    }
+
+    if (params.fov !== undefined) {
+      this.config.fov = params.fov;
+      this.camera.fov = params.fov;
+    }
+
+    if (params.near !== undefined) {
+      this.config.near = params.near;
+      this.camera.near = params.near;
+    }
+
+    if (params.far !== undefined) {
+      this.config.far = params.far;
+      this.camera.far = params.far;
+    }
+
+    if (params.aspect !== undefined) {
+      this.config.aspect = params.aspect;
+      this.camera.aspect = params.aspect;
+    }
+
+    // Update projection matrix
+    this.camera.updateProjectionMatrix();
+
+    console.log("[CameraController] Camera params updated:", this.config);
+
+    // Notify other systems (e.g., PhysicsSystem)
+    if (this.context) {
+      this.context.eventBus.emit("system:initialized", {
+        name: "camera-config-updated",
+      });
+    }
+  }
+
+  /**
+   * Static factory method to create camera and controls
+   * Phase 2: Application will use this instead of main.ts
+   */
+  static createCamera(
+    config: CameraConfig,
+    canvas: HTMLCanvasElement
+  ): { camera: THREE.PerspectiveCamera; controls: OrbitControls } {
+    const aspect = config.aspect || window.innerWidth / window.innerHeight;
+    const camera = new THREE.PerspectiveCamera(
+      config.fov || 80,
+      aspect,
+      config.near || 0.3,
+      config.far || 100
+    );
+
+    // Set initial position if provided
+    if (config.position) {
+      camera.position.copy(config.position);
+    }
+
+    // Create controls
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+
+    // Set target if provided
+    if (config.target) {
+      controls.target.copy(config.target);
+    }
+
+    return { camera, controls };
   }
 }
