@@ -1,3 +1,5 @@
+import { CameraFrame } from "./types";
+
 // Import debug logger for worker
 interface DebugLogger {
     setDebugEnabled(enabled: boolean): void;
@@ -101,12 +103,7 @@ interface ChunkMessage {
 
 interface CameraMessage {
     type: 'camera'
-    position: Float32Array
-    target: Float32Array
-    intrinsics: Float32Array
-    projection: Float32Array
-    frameId?: number,
-    timeIndex: number,
+    frame: CameraFrame
 }
 
 interface ConnectionMessage {
@@ -169,7 +166,7 @@ self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMes
             decodeChunk(data.data)
             break
         case 'camera':
-            updateCamera(data)
+            updateCamera(data.frame)
             break
         case 'change':
             ws.close(1000, "Connection changed")
@@ -294,51 +291,67 @@ function parseJPEGMessage(data: ArrayBuffer): {
     }
 }
 
-function updateCamera(data: CameraMessage) {
-    const position = new Float32Array(data.position);
-    const target = new Float32Array(data.target);
-    const intrinsics = new Float32Array(data.intrinsics);
-    const projection = new Float32Array(data.projection);
+function updateCamera(data: CameraFrame) {
+    // Check if WebSocket is ready
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn(`[Worker] updateCamera: WebSocket not ready (readyState=${ws?.readyState}), skipping frame ${data.frameId}`);
+        return;
+    }
+
+    console.log(data)
 
     // Debug: timeIndex 값 확인
     debug.logWorker(`[updateCamera] Received timeIndex: ${data.timeIndex} (type: ${typeof data.timeIndex})`);
 
-    const dv = new Float32Array(32); // 32 * 4 = 128 bytes
+    /**
+     * Protocol v2: 224 bytes total
+     * Camera data: 192 bytes (48 floats)
+     *   - view_matrix: 16 floats (0-15)
+     *   - projection_matrix: 16 floats (16-31)
+     *   - intrinsics: 9 floats (32-40)
+     *   - reserved: 7 floats (41-47)
+     * Metadata: 32 bytes
+     *   - frame_id: 4 bytes (192-196)
+     *   - padding: 4 bytes (196-200)
+     *   - client_timestamp: 8 bytes (200-208)
+     *   - time_index: 4 bytes (208-212)
+     *   - padding: 12 bytes (212-224)
+     */
 
-    // position (3 floats)
-    dv.set(position, 0);
+    const finalBuffer = new ArrayBuffer(224);
 
-    // target (3 floats) 
-    dv.set(target, 3);
+    // Camera data view (48 floats = 192 bytes)
+    const floatView = new Float32Array(finalBuffer, 0, 48);
 
-    // intrinsics (9 floats)
-    dv.set(intrinsics, 6);
+    // 0-15: view_matrix (16 floats)
+    floatView.set(data.view, 0);
 
-    // padding (1 float) - 서버에서 기대하는 0.0 값
-    dv[15] = 0.0;
+    // 16-31: projection_matrix (16 floats)
+    floatView.set(data.projection, 16);
 
-    // projection (16 floats)
-    dv.set(projection, 16);
+    // 32-40: intrinsics (9 floats)
+    floatView.set(data.intrinsics, 32);
 
-    // frameId와 타임스탬프 추가 (4 + 4(패딩) + 8 = 16 bytes)
+    // 41-47: reserved (7 floats) - automatically zero-initialized
+
+    // Metadata views
+    const frameIdView = new Uint32Array(finalBuffer, 192, 1);
+    const timestampView = new Float64Array(finalBuffer, 200, 1);
+    const timeIndexView = new Float32Array(finalBuffer, 208, 1);
+
     const timestamp = performance.timeOrigin + performance.now();
     const frameId = data.frameId || 0;
 
-    // 최종 버퍼 생성 (128 + 16 = 144 bytes, 8바이트 정렬을 위해 패딩 추가)
-    const finalBuffer = new ArrayBuffer(160);
-    const floatView = new Float32Array(finalBuffer, 0, 32);
-    const frameIdView = new Uint32Array(finalBuffer, 128, 1);
-    // 132는 8의 배수가 아니므로 136으로 조정 (8바이트 정렬)
-    const timestampView = new Float64Array(finalBuffer, 136, 1);
-    const timeIndexView = new Float32Array(finalBuffer, 144, 1);
-
-
-    floatView.set(dv);
     frameIdView[0] = frameId;
     timestampView[0] = timestamp;
     timeIndexView[0] = (typeof data.timeIndex === 'number' && !isNaN(data.timeIndex)) ? data.timeIndex : 0.0;
 
     ws.send(finalBuffer);
+
+    // Log first few frames to verify sending
+    if (frameId <= 3 || frameId % 60 === 0) {
+        console.log(`[Worker] Sent camera frame ${frameId} to server (224 bytes, protocol v2)`);
+    }
 }
 
 function sendPing(clientTime: number) {
@@ -531,6 +544,13 @@ async function initWebSocket(wsURL: string) {
         const arrBuf = e.data as ArrayBuffer;
         const clientReceiveTime = performance.now();
 
+        // Log first few messages to verify reception
+        if (!ws['_messageCount']) ws['_messageCount'] = 0;
+        ws['_messageCount']++;
+        if (ws['_messageCount'] <= 3 || ws['_messageCount'] % 60 === 0) {
+            console.log(`[Worker] ws.onmessage #${ws['_messageCount']}: ${arrBuf.byteLength} bytes`);
+        }
+
         // Ping response 처리 (type(1) + padding(7) + clientTime(8) + serverTime(8) = 24 bytes)
         if (arrBuf.byteLength === 24) {
             const dv = new DataView(arrBuf);
@@ -557,6 +577,7 @@ async function initWebSocket(wsURL: string) {
         }
 
         if (jpegFallback) {
+            console.log(`[Worker] Parsing as JPEG (jpegFallback=${jpegFallback})`);
             const parseResult = parseJPEGMessage(arrBuf);
             if (!parseResult) {
                 // Format mismatch: expected JPEG, got H264 (Backend transition pending)
@@ -601,14 +622,21 @@ async function initWebSocket(wsURL: string) {
                 decodeStart = now;
             }
         } else {
+            console.log(`[Worker] Parsing as H264 (jpegFallback=${jpegFallback}), size=${arrBuf.byteLength}`);
             const parseResult = parseH264Message(arrBuf);
             if (!parseResult) {
                 // Format mismatch: expected H264, got JPEG (Backend transition pending)
-                debug.warn("[Worker] Expected H264 format, received JPEG - Backend encoder transition pending, skipping frame");
+                console.error("[Worker] ❌ Expected H264 format, received JPEG - Backend encoder transition pending, skipping frame");
+                console.error("[Worker] Message size:", arrBuf.byteLength, "bytes");
                 return;
             }
 
             const { frameId, videoData, serverTimestamps } = parseResult;
+
+            // Log first few frames to verify H264 decoding
+            if (frameId <= 3 || frameId % 60 === 0) {
+                console.log(`[Worker] Parsed H264 frame ${frameId}: video=${videoData.byteLength} bytes`);
+            }
 
             // 레이턴시 추적 정보 전달
             self.postMessage({
@@ -693,7 +721,7 @@ async function handleFrame(frame: VideoFrame) {
     frame.close();
 
     self.postMessage({
-        type: 'frame',
+        type: 'video-frame',
         frameId,
         image: colorBitmap,
         depth: depthBitmap,

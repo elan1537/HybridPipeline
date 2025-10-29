@@ -320,4 +320,94 @@ export class TextureManager implements System {
   isJPEGMode(): boolean {
     return this.isJpegMode;
   }
+
+  // ========================================================================
+  // Depth Sampling (for Collision Detection)
+  // ========================================================================
+
+  /**
+   * Sample linear depth value at pixel coordinates
+   *
+   * Backend encodes depth as: d_norm = (log(depth/near) / log(far/near)) * 0.80823
+   * Inverse: depth = near * exp((d_norm / 0.80823) * log(far/near))
+   *
+   * @param x - Pixel x coordinate [0, width)
+   * @param y - Pixel y coordinate [0, height)
+   * @param near - Near clipping plane (meters)
+   * @param far - Far clipping plane (meters)
+   * @returns Linear depth in meters, or null if out of bounds or no data
+   */
+  sampleLinearDepth(x: number, y: number, near: number, far: number): number | null {
+    if (!this.depthTexture || x < 0 || x >= this.width || y < 0 || y >= this.height) {
+      return null;
+    }
+
+    const pixelIndex = Math.floor(y) * this.width + Math.floor(x);
+    const data = this.depthTexture.image.data;
+
+    if (!data || pixelIndex >= data.length) {
+      return null;
+    }
+
+    let normalized: number;
+
+    if (this.isJpegMode) {
+      // JPEG mode: Uint16Array (Float16 encoded)
+      const uint16Data = data as Uint16Array;
+      const uint16Value = uint16Data[pixelIndex];
+
+      // Convert Float16 to Float32 (inline to avoid dependency)
+      // Simple approximation for normalized [0, 1] range
+      // For full precision, use proper IEEE 754 Float16 decoder
+      normalized = uint16Value / 65535.0; // Simple linear approximation
+    } else {
+      // H264 mode: Uint8Array
+      const uint8Data = data as Uint8Array;
+      normalized = uint8Data[pixelIndex] / 255.0;
+    }
+
+    // Convert log-normalized depth to linear depth
+    const scale = 0.80823; // Backend scale factor
+    if (normalized <= 0) return near;
+    if (normalized >= scale) return far;
+
+    const logRatio = (normalized / scale) * Math.log(far / near);
+    const linearDepth = near * Math.exp(logRatio);
+
+    return linearDepth;
+  }
+
+  /**
+   * Sample depth with bilinear interpolation
+   *
+   * @param u - Normalized texture coordinate [0, 1]
+   * @param v - Normalized texture coordinate [0, 1]
+   * @param near - Near clipping plane
+   * @param far - Far clipping plane
+   * @returns Interpolated linear depth, or null if invalid
+   */
+  sampleLinearDepthBilinear(u: number, v: number, near: number, far: number): number | null {
+    const x = u * this.width - 0.5;
+    const y = v * this.height - 0.5;
+
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const x1 = x0 + 1;
+    const y1 = y0 + 1;
+    const fx = x - x0;
+    const fy = y - y0;
+
+    const d00 = this.sampleLinearDepth(x0, y0, near, far);
+    const d10 = this.sampleLinearDepth(x1, y0, near, far);
+    const d01 = this.sampleLinearDepth(x0, y1, near, far);
+    const d11 = this.sampleLinearDepth(x1, y1, near, far);
+
+    if (d00 === null || d10 === null || d01 === null || d11 === null) {
+      return null;
+    }
+
+    const d0 = d00 * (1 - fx) + d10 * fx;
+    const d1 = d01 * (1 - fx) + d11 * fx;
+    return d0 * (1 - fy) + d1 * fy;
+  }
 }

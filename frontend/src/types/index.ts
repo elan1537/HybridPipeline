@@ -14,12 +14,17 @@ import * as THREE from "three";
 
 /**
  * Camera frame data sent to the backend
- * Total size: 160 bytes when serialized
+ * Total size: 224 bytes when serialized
+ *
+ * Protocol v2: Direct matrix transmission for zero-distortion rendering
+ * - view: World → Camera transform (matrixWorldInverse)
+ * - projection: Camera → Clip transform (projectionMatrix)
+ * - intrinsics: Pixel-space camera intrinsics (from getCameraIntrinsics)
  */
 export interface CameraFrame {
-  eye: Float32Array; // 3 floats - camera position
-  target: Float32Array; // 3 floats - look at target
-  intrinsics: Float32Array; // 9 floats - projection matrix
+  view: Float32Array;        // 16 floats - view matrix (4×4)
+  projection: Float32Array;  // 16 floats - projection matrix (4×4)
+  intrinsics: Float32Array;  // 9 floats - intrinsics matrix (3×3)
   frameId: number;
   timestamp: number;
   timeIndex: number;
@@ -62,6 +67,7 @@ export interface ApplicationConfig {
   height: number;
   renderMode: RenderMode;
   debugMode: boolean;
+  cameraConfig?: CameraConfig; // Optional camera configuration
 }
 
 /**
@@ -92,6 +98,7 @@ export interface SystemContext {
   renderingContext: any; // Will be RenderingContext type
   eventBus: any; // Will be EventBus type
   state: any; // Will be ApplicationState type
+  systems?: Map<string, System>; // Access to other systems
 }
 
 // ============================================================================
@@ -128,6 +135,18 @@ export interface CameraState {
   fov: number;
   near: number;
   far: number;
+}
+
+/**
+ * Camera configuration for initialization
+ */
+export interface CameraConfig {
+  fov?: number;
+  near?: number;
+  far?: number;
+  aspect?: number;
+  position?: THREE.Vector3;
+  target?: THREE.Vector3;
 }
 
 // ============================================================================
