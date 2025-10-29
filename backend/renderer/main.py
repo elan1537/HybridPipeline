@@ -59,12 +59,33 @@ def create_renderer_config(args) -> dict:
 
     # Streamable-specific config
     if args.scene_type == 'streamable':
-        config.update({
-            'ntc_path': args.ntc_path,
-            'ntc_config': args.ntc_config,
-            'iterations_s1': args.iterations_s1,
-            'iterations_s2': args.iterations_s2,
-        })
+        if args.checkpoints_path:
+            # Inference mode: Use checkpoints directory
+            weight_path_pattern = os.path.join(
+                args.checkpoints_path,
+                'frame_{frame_id:06d}',
+                'gaussian.ply'
+            )
+            config.update({
+                'weight_path_pattern': weight_path_pattern,
+                'checkpoints_dir': args.checkpoints_path,
+                'ntc_path': None,
+                'ntc_config': None,
+                'dataset_path': '',
+                'iterations_s1': args.iterations_s1,
+                'iterations_s2': args.iterations_s2,
+            })
+        else:
+            # Training mode: Use individual paths
+            config.update({
+                'ntc_path': args.ntc_path,
+                'ntc_config': args.ntc_config,
+                'dataset_path': args.dataset_path or '',
+                'weight_path_pattern': None,
+                'checkpoints_dir': None,
+                'iterations_s1': args.iterations_s1,
+                'iterations_s2': args.iterations_s2,
+            })
 
     return config
 
@@ -193,30 +214,46 @@ def parse_args():
         help='Gaussian scale factor (static only)'
     )
 
-    # Streamable Gaussian options
-    parser.add_argument(
+    # Streamable Gaussian - Inference Mode
+    inference_group = parser.add_argument_group('Streamable Gaussian - Inference Mode')
+    inference_group.add_argument(
+        '--checkpoints-path',
+        type=str,
+        default=None,
+        help='Path to checkpoints directory with frame_X/{gaussian.ply, ntc.pth} structure'
+    )
+
+    # Streamable Gaussian - Training Mode
+    training_group = parser.add_argument_group('Streamable Gaussian - Training Mode')
+    training_group.add_argument(
         '--ntc-path',
         type=str,
         default=None,
-        help='Path to NTC model (streamable only)'
+        help='Path to NTC model (.pth)'
     )
-    parser.add_argument(
+    training_group.add_argument(
         '--ntc-config',
         type=str,
         default=None,
-        help='Path to NTC config JSON (streamable only)'
+        help='Path to NTC config JSON'
     )
-    parser.add_argument(
+    training_group.add_argument(
+        '--dataset-path',
+        type=str,
+        default=None,
+        help='Path to COLMAP dataset directory'
+    )
+    training_group.add_argument(
         '--iterations-s1',
         type=int,
         default=50,
-        help='Stage 1 iterations (streamable only)'
+        help='Stage 1 training iterations'
     )
-    parser.add_argument(
+    training_group.add_argument(
         '--iterations-s2',
         type=int,
         default=50,
-        help='Stage 2 iterations (streamable only)'
+        help='Stage 2 training iterations'
     )
 
     # Encoder options
@@ -246,15 +283,59 @@ def validate_args(args):
 
     # Streamable-specific validation
     if args.scene_type == 'streamable':
-        if not args.ntc_path:
-            raise ValueError("--ntc-path is required for streamable renderer")
-        if not args.ntc_config:
-            raise ValueError("--ntc-config is required for streamable renderer")
+        if args.checkpoints_path:
+            # Inference mode validation
+            if not os.path.exists(args.checkpoints_path):
+                raise FileNotFoundError(f"Checkpoints path not found: {args.checkpoints_path}")
 
-        if not os.path.exists(args.ntc_path):
-            raise FileNotFoundError(f"NTC model not found: {args.ntc_path}")
-        if not os.path.exists(args.ntc_config):
-            raise FileNotFoundError(f"NTC config not found: {args.ntc_config}")
+            # Check for frame_000001 structure
+            sample_frame = os.path.join(args.checkpoints_path, 'frame_000001')
+            if not os.path.exists(sample_frame):
+                raise FileNotFoundError(
+                    f"Invalid checkpoints structure. Expected frame_XXXXXX directories in {args.checkpoints_path}"
+                )
+
+            sample_ply = os.path.join(sample_frame, 'gaussian.ply')
+            if not os.path.exists(sample_ply):
+                raise FileNotFoundError(
+                    f"gaussian.ply not found in {sample_frame}. "
+                    f"Expected structure: checkpoints/frame_XXXXXX/gaussian.ply"
+                )
+
+            # Check for config.json
+            config_json = os.path.join(args.checkpoints_path, 'config.json')
+            if not os.path.exists(config_json):
+                ntc_config_source = '/workspace/research/3DGStream/configs/cache/cache_F_4.json'
+                raise FileNotFoundError(
+                    f"config.json not found in {args.checkpoints_path}\n"
+                    f"Please copy NTC config to checkpoints directory:\n"
+                    f"  cp {ntc_config_source} {config_json}\n"
+                    f"Or run inside docker:\n"
+                    f"  docker exec -it <container> cp {ntc_config_source} {config_json}"
+                )
+
+            print(f"[CONFIG] Mode: Inference (using checkpoints from {args.checkpoints_path})")
+
+        else:
+            # Training mode validation
+            if not args.ntc_path:
+                raise ValueError("--ntc-path is required for training mode")
+            if not args.ntc_config:
+                raise ValueError("--ntc-config is required for training mode")
+
+            if not os.path.exists(args.ntc_path):
+                raise FileNotFoundError(f"NTC model not found: {args.ntc_path}")
+            if not os.path.exists(args.ntc_config):
+                raise FileNotFoundError(f"NTC config not found: {args.ntc_config}")
+
+            if args.dataset_path and not os.path.exists(args.dataset_path):
+                raise FileNotFoundError(f"Dataset path not found: {args.dataset_path}")
+
+            print(f"[CONFIG] Mode: Training")
+            if args.dataset_path:
+                print(f"[CONFIG] Dataset: {args.dataset_path}")
+            else:
+                print(f"[CONFIG] No dataset path (single-frame mode)")
 
     # Validate resolution
     if args.width <= 0 or args.height <= 0:
