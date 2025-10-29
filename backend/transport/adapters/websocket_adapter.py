@@ -4,7 +4,7 @@ WebSocket Adapter for Frontend communication.
 Handles WebSocket connections from Frontend clients (browser, app, etc.)
 
 Protocol:
-- Camera: Frontend → Transport (160 bytes)
+- Camera: Frontend → Transport (224 bytes, Protocol v2)
 - Video: Transport → Frontend (44/48 bytes header + data)
 - Handshake: 4 bytes (width, height)
 - Ping/Pong: 16 bytes
@@ -36,7 +36,7 @@ class WebSocketAdapter(BaseFrontendAdapter):
 
     Responsibilities:
     - Accept WebSocket connections from Frontend
-    - Receive camera data (160 bytes)
+    - Receive camera data (224 bytes, Protocol v2)
     - Send video data (44/48 bytes header + data)
     - Handle handshake and ping/pong
     """
@@ -203,11 +203,11 @@ class WebSocketAdapter(BaseFrontendAdapter):
                         self.camera_queue.put_nowait(control_frame)
                     continue
 
-                # Camera data (160 bytes)
-                elif len(raw) == 160:
+                # Camera data (224 bytes, Protocol v2)
+                elif len(raw) == 224:
                     server_timestamp = time.time() * 1000.0  # ms
 
-                    # Parse Frontend camera (160 bytes → CameraFrame)
+                    # Parse Frontend camera (224 bytes → CameraFrame, Protocol v2)
                     camera = parse_frontend_camera(
                         raw,
                         width=self.width,
