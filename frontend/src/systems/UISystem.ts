@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons';
-import { System, SystemContext } from '../types';
+import { System, SystemContext, RenderMode } from '../types';
 import { Application } from '../core/Application';
 import { WebSocketSystem } from './WebSocketSystem';
 import { TextureManager } from './TextureManager';
@@ -15,7 +15,7 @@ import { debug } from '../debug-logger';
 
 // Import panels
 import { StatsPanel } from '../ui/panels/StatsPanel';
-import { ControlPanel, RenderMode } from '../ui/panels/ControlPanel';
+import { ControlPanel } from '../ui/panels/ControlPanel';
 import { DebugPanel } from '../ui/panels/DebugPanel';
 import { RecordingPanel } from '../ui/panels/RecordingPanel';
 import { FPSTestPanel } from '../ui/panels/FPSTestPanel';
@@ -200,16 +200,34 @@ export class UISystem implements System {
 
   private handleDepthDebugToggle(enabled: boolean): void {
     debug.logMain(`[UISystem] Depth debug ${enabled ? 'enabled' : 'disabled'}`);
-    // TODO: Implement depth debug visualization
+
+    // Update RenderingSystem
+    const renderingSystem = this.app.getSystem('rendering');
+    if (renderingSystem) {
+      // @ts-ignore - RenderingSystem.setDepthDebugEnabled() exists
+      renderingSystem.setDepthDebugEnabled(enabled);
+    } else {
+      debug.error('[UISystem] RenderingSystem not found');
+    }
   }
 
   private handleRenderModeChange(mode: RenderMode): void {
     debug.logMain(`[UISystem] Render mode changed to ${mode}`);
 
-    // Update recording panel
+    // 1. Update RenderingSystem
+    const renderingSystem = this.app.getSystem('rendering');
+    if (renderingSystem) {
+      // @ts-ignore - RenderingSystem.setRenderMode() exists
+      renderingSystem.setRenderMode(mode);
+      debug.logMain(`[UISystem] RenderingSystem updated to ${mode}`);
+    } else {
+      debug.error('[UISystem] RenderingSystem not found');
+    }
+
+    // 2. Update recording panel
     this.recording.setRenderMode(mode);
 
-    // Handle feed-forward mode special case
+    // 3. Handle feed-forward mode special case
     if (mode === RenderMode.FEED_FORWARD) {
       const ws = this.app.getSystem<WebSocketSystem>('websocket');
       if (ws) {
@@ -232,13 +250,14 @@ export class UISystem implements System {
   // ========================================================================
 
   private handleConsoleDebugToggle(enabled: boolean): void {
-    debug.setDebugEnabled(enabled);
+    // Note: debug.setDebugEnabled() is already called in DebugPanel.handleConsoleDebugToggle()
+    // No need to call it again here
 
     // Notify worker
     const ws = this.app.getSystem<WebSocketSystem>('websocket');
     if (ws) {
       // TODO: Add method to WebSocketSystem to toggle worker debug
-      debug.logMain('[UISystem] Worker debug toggle - implementation needed');
+      debug.logMain(`[UISystem] Console debug ${enabled ? 'enabled' : 'disabled'}, worker notification needed`);
     }
   }
 

@@ -4,15 +4,7 @@
  */
 
 import { debug } from '../../debug-logger';
-
-// Render mode enum (matches main.ts:153-159)
-export enum RenderMode {
-  FUSION = 'fusion',
-  GAUSSIAN_ONLY = 'gaussian',
-  LOCAL_ONLY = 'local',
-  DEPTH_FUSION = 'depth-fusion',
-  FEED_FORWARD = 'feed-forward'
-}
+import { RenderMode } from '../../types';
 
 // Callbacks for handling UI events
 export interface ControlPanelCallbacks {

@@ -4,7 +4,7 @@
  */
 
 import { debug } from '../../debug-logger';
-import { RenderMode } from './ControlPanel';
+import { RenderMode } from '../../types';
 
 export class RecordingPanel {
   // DOM elements

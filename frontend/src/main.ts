@@ -21,15 +21,35 @@ import debugFragmentShader from './shaders/debugColorShader.fs?raw';
 import depthFusionFragmentShader from './shaders/depthFusionShader.fs?raw';
 
 // Simple shader for displaying WebSocket color texture only (based on fusionColorShader)
+// Uses same UV convention and colorspace as Fusion for consistency
 const gaussianOnlyFragmentShader = `
   varying vec2 vUv;
   uniform sampler2D wsColorSampler;
-  
+
   void main() {
-    // Same UV flipping as in fusionColorShader
-    vec2 wsUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
+    // Same final UV as fusionColorShader (after both flips cancel out X-axis)
+    // fusionFlipX=true + wsFlipX=true results in: vec2(vUv.x, 1.0 - vUv.y)
+    vec2 wsUv = vec2(vUv.x, 1.0 - vUv.y);
     vec4 wsColor = texture2D(wsColorSampler, wsUv);
-    gl_FragColor = vec4(wsColor.rgb, 1.0);
+
+    // Use same colorspace conversion as Fusion
+    gl_FragColor = linearToOutputTexel(wsColor);
+  }
+`;
+
+// Simple shader for displaying local color texture only (for LOCAL_ONLY mode)
+// Uses same UV flip and colorspace as Fusion for consistency
+const localOnlyFragmentShader = `
+  varying vec2 vUv;
+  uniform sampler2D localColorSampler;
+
+  void main() {
+    // Same X-axis flip as Fusion (when fusionFlipX=true: currentUv.x = 1.0 - vUv.x)
+    vec2 localUv = vec2(1.0 - vUv.x, vUv.y);
+    vec4 localColor = texture2D(localColorSampler, localUv);
+
+    // Use same colorspace conversion as Fusion
+    gl_FragColor = linearToOutputTexel(localColor);
   }
 `;
 
@@ -79,6 +99,11 @@ let gaussianOnlyMaterial: THREE.ShaderMaterial;
 let gaussianOnlyScene: THREE.Scene;
 let gaussianOnlyCamera: THREE.OrthographicCamera;
 
+let localOnlyQuad: THREE.Mesh;
+let localOnlyMaterial: THREE.ShaderMaterial;
+let localOnlyScene: THREE.Scene;
+let localOnlyCamera: THREE.OrthographicCamera;
+
 let depthFusionQuad: THREE.Mesh;
 let depthFusionMaterial: THREE.ShaderMaterial;
 let depthFusionScene: THREE.Scene;
@@ -90,14 +115,7 @@ const latencyTracker = new LatencyTracker();
 
 // Legacy UI variables removed - now managed by UISystem
 
-// Render mode constants
-enum RenderMode {
-    FUSION = 'fusion',
-    GAUSSIAN_ONLY = 'gaussian',
-    LOCAL_ONLY = 'local',
-    DEPTH_FUSION = 'depth-fusion',
-    FEED_FORWARD = 'feed-forward'
-}
+// Render mode constants removed - now using RenderMode from types/index.ts
 
 let currentTimeIndex: number = 0.0;
 let frameCounter: number = 0; // Integer frame counter for 4DGS (0-299)
@@ -206,6 +224,11 @@ function updateShaderUniforms() {
         debugMaterial.uniforms.height.value = rtHeight;
     }
 
+    // Local-only material 업데이트
+    if (localOnlyMaterial) {
+        localOnlyMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
+    }
+
     // Depth fusion material 업데이트
     if (depthFusionMaterial) {
         depthFusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
@@ -301,6 +324,9 @@ function recreateLocalRenderTarget() {
     if (debugMaterial) {
         debugMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
         debugMaterial.uniforms.localDepthSampler.value = localDepthTexture;
+    }
+    if (localOnlyMaterial) {
+        localOnlyMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
     }
     if (depthFusionMaterial) {
         depthFusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
@@ -820,6 +846,22 @@ async function initScene() {
     gaussianOnlyScene.add(gaussianOnlyQuad);
     gaussianOnlyCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
+    // Local-only scene setup (displays local color texture with same colorspace as Fusion)
+    localOnlyMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            localColorSampler: { value: localRenderTarget.texture }
+        },
+        vertexShader: fusionVertexShader,
+        fragmentShader: localOnlyFragmentShader,
+        depthTest: false,
+        depthWrite: false,
+    });
+
+    localOnlyQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), localOnlyMaterial);
+    localOnlyScene = new THREE.Scene();
+    localOnlyScene.add(localOnlyQuad);
+    localOnlyCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
     // Depth fusion scene setup
     depthFusionMaterial = new THREE.ShaderMaterial({
         uniforms: {
@@ -941,11 +983,13 @@ initScene().then(async () => {
                 fusionScene,
                 debugScene,
                 gaussianOnlyScene,
+                localOnlyScene,
                 depthFusionScene,
                 camera,
                 orthoCamera,
                 debugCamera,
                 gaussianOnlyCamera,
+                localOnlyCamera,
                 depthFusionCamera,
                 localRenderTarget,
                 controls,
@@ -999,14 +1043,14 @@ initScene().then(async () => {
             // Add to physics with gravity
             app.addPhysicsMesh(testSphere, {
                 velocity: new THREE.Vector3(0, 0, 0),
-                acceleration: new THREE.Vector3(0, -0.05, 0), // Gravity
+                acceleration: new THREE.Vector3(0, -9.8, 0), // Gravity
                 mass: 1.0,
                 restitution: 0.7, // 70% bounce
                 friction: 0.3     // 30% friction
             });
 
             // Set collision response type
-            app.setPhysicsResponseType("slide"); // Options: "stop", "bounce", "slide"
+            app.setPhysicsResponseType("stop"); // Options: "stop", "bounce", "slide"
 
             // Adjust collision threshold (5cm tolerance)
             app.setCollisionEpsilon(0.05);

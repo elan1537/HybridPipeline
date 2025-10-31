@@ -197,14 +197,27 @@ export type StateListener<T = any> = (value: T, prevValue?: T) => void;
 
 /**
  * Rendering modes
- * - Mesh: Three.js local rendering only
- * - Gaussian: Server-side Gaussian splatting image only
- * - Hybrid: Mesh + Gaussian depth combined rendering
+ * - Mesh: Three.js local rendering only (legacy)
+ * - Gaussian: Server-side Gaussian splatting image only (legacy)
+ * - Hybrid: Mesh + Gaussian depth combined rendering (legacy)
+ * - FUSION: Gaussian + Local Mesh fusion rendering
+ * - GAUSSIAN_ONLY: Gaussian Splatting only
+ * - LOCAL_ONLY: Local Mesh only
+ * - DEPTH_FUSION: Depth-based fusion rendering
+ * - FEED_FORWARD: Feed-forward frame-by-frame rendering
  */
 export enum RenderMode {
+  // Legacy modes (for Application initialization)
   Mesh = "mesh",
   Gaussian = "gaussian",
   Hybrid = "hybrid",
+
+  // Active scene rendering modes
+  FUSION = "fusion",
+  GAUSSIAN_ONLY = "gaussian-only",
+  LOCAL_ONLY = "local-only",
+  DEPTH_FUSION = "depth-fusion",
+  FEED_FORWARD = "feed-forward",
 }
 
 /**
