@@ -27,6 +27,11 @@ export class TextureManager implements System {
     // Create initial textures
     this.createTextures();
 
+    // Initial shader material update will be called after materials are registered
+    // This is deferred to allow main.ts to register materials first
+    console.log("[TextureManager] Initialized with size", this.width, "x", this.height);
+    console.log("[TextureManager] Shader materials will be updated after registration");
+
     // Subscribe to resolution changes
     context.state.subscribe("rendering:width", (width: number) => {
       this.resize(width, this.height);
@@ -35,8 +40,6 @@ export class TextureManager implements System {
     context.state.subscribe("rendering:height", (height: number) => {
       this.resize(this.width, height);
     });
-
-    console.log("[TextureManager] Initialized with size", this.width, "x", this.height);
   }
 
   update(deltaTime: number): void {
@@ -297,8 +300,62 @@ export class TextureManager implements System {
       if (this.context) {
         this.context.renderingContext.registerTexture("wsDepth", this.depthTexture);
         console.log(`[TextureManager] Registered new depth texture with RenderingContext`);
+
+        // Update all shader materials that use this depth texture
+        this.updateShaderMaterials();
       }
     }
+  }
+
+  /**
+   * Update shader materials to use the current textures (both color and depth)
+   * This is called when textures are created/recreated (e.g., initialization, mode switch, resize)
+   */
+  private updateShaderMaterials(): void {
+    if (!this.context || !this.colorTexture || !this.depthTexture) {
+      console.warn('[TextureManager] Cannot update shader materials: textures not ready');
+      return;
+    }
+
+    const renderingContext = this.context.renderingContext;
+
+    // Material configuration: which uniforms each material needs
+    const materialConfig = [
+      { name: 'fusion', uniforms: ['wsColorSampler', 'wsDepthSampler'] },
+      { name: 'debug', uniforms: ['wsColorSampler', 'wsDepthSampler'] },
+      { name: 'depthFusion', uniforms: ['wsColorSampler', 'wsDepthSampler'] },
+      { name: 'gaussianOnly', uniforms: ['wsColorSampler'] },
+    ];
+
+    materialConfig.forEach(config => {
+      const material = renderingContext.getMaterial(config.name);
+      if (material && 'uniforms' in material) {
+        const shaderMaterial = material as THREE.ShaderMaterial;
+
+        config.uniforms.forEach(uniformName => {
+          if (shaderMaterial.uniforms[uniformName]) {
+            if (uniformName === 'wsColorSampler') {
+              shaderMaterial.uniforms[uniformName].value = this.colorTexture;
+              console.log(`[TextureManager] Updated ${config.name}.${uniformName}`);
+            } else if (uniformName === 'wsDepthSampler') {
+              shaderMaterial.uniforms[uniformName].value = this.depthTexture;
+              console.log(`[TextureManager] Updated ${config.name}.${uniformName}`);
+            }
+          }
+        });
+      }
+    });
+
+    console.log(`[TextureManager] All shader materials updated with current textures`);
+  }
+
+  /**
+   * Called by main.ts after shader materials are registered with RenderingContext
+   * This performs the initial texture assignment
+   */
+  initializeShaderMaterials(): void {
+    console.log('[TextureManager] initializeShaderMaterials() called');
+    this.updateShaderMaterials();
   }
 
   // ========================================================================
@@ -343,7 +400,7 @@ export class TextureManager implements System {
     }
 
     const pixelIndex = Math.floor(y) * this.width + Math.floor(x);
-    const data = this.depthTexture.image.data;
+    const data = this.depthTexture.image.data as Uint16Array | Uint8Array;
 
     if (!data || pixelIndex >= data.length) {
       return null;

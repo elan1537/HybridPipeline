@@ -86,8 +86,8 @@ let fusionMaterial: THREE.ShaderMaterial;
 let fusionScene: THREE.Scene;
 let orthoCamera: THREE.OrthographicCamera;
 
-let wsColorTexture: THREE.Texture
-let wsDepthTexture: THREE.DataTexture
+// wsColorTexture removed - TextureManager manages this
+// wsDepthTexture removed - TextureManager manages this
 
 let debugScreen: THREE.Mesh;
 let debugMaterial: THREE.ShaderMaterial;
@@ -117,59 +117,15 @@ const latencyTracker = new LatencyTracker();
 
 // Render mode constants removed - now using RenderMode from types/index.ts
 
-let currentTimeIndex: number = 0.0;
-let frameCounter: number = 0; // Integer frame counter for 4DGS (0-299)
-let isPlaying = true;
-
-// Legacy recording variables removed - now managed by RecordingPanel
-
-// Legacy texture update tracking variables removed - now handled by TextureManager
-
-// Performance tracking (only enabled in development)
-const ENABLE_PERFORMANCE_TRACKING = false; // Set to true for debugging
-let textureUpdateCount = 0;
-let cameraUpdateCount = 0;
-let renderTargetSwitchCount = 0;
-let lastPerformanceLogTime = 0;
-const performanceLogInterval = 10000; // Log every 10 seconds
-
-// Legacy frame processing and FPS measurement variables removed - now handled by LatencyTracker
+// Legacy variables removed:
+// - currentTimeIndex, frameCounter, isPlaying: now managed by Application.timeController
+// - Recording variables: now managed by RecordingPanel
+// - Texture update tracking: now handled by TextureManager
+// - Performance tracking: removed
+// - Frame processing and FPS: now handled by LatencyTracker
 
 // Legacy event listeners and functions removed - now managed by UISystem
-
-function recreateDepthTexture(isJpegMode: boolean) {
-    if (wsDepthTexture) {
-        debug.logMain(`[recreateDepthTexture] Disposing old depth texture: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
-        wsDepthTexture.dispose();
-    }
-
-    debug.logMain(`[recreateDepthTexture] Creating new texture for ${isJpegMode ? 'JPEG' : 'H264'} mode: ${rtWidth}×${rtHeight}`);
-
-    if (isJpegMode) {
-        // JPEG mode: Float16 data in Uint16Array format
-        const depthArray = new Uint16Array(rtWidth * rtHeight);
-        wsDepthTexture = new THREE.DataTexture(depthArray, rtWidth, rtHeight, THREE.RedFormat, THREE.HalfFloatType);
-        debug.logMain(`[recreateDepthTexture] JPEG mode: Created Uint16Array of size ${depthArray.length}`);
-    } else {
-        // H264 mode: Uint8Array grayscale data
-        const depthArray = new Uint8Array(rtWidth * rtHeight);
-        wsDepthTexture = new THREE.DataTexture(depthArray, rtWidth, rtHeight, THREE.RedFormat, THREE.UnsignedByteType);
-        debug.logMain(`[recreateDepthTexture] H264 mode: Created Uint8Array of size ${depthArray.length}`);
-    }
-
-    // Update shader uniforms with new texture
-    if (fusionMaterial) {
-        fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-    }
-    if (debugMaterial) {
-        debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-    }
-    if (depthFusionMaterial) {
-        depthFusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-    }
-
-    debug.logMain(`[recreateDepthTexture] Depth texture recreated: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
-}
+// Legacy depth texture management removed - now managed by TextureManager
 
 // Legacy camera and recording event listeners removed - now managed by UISystem
 
@@ -196,30 +152,28 @@ function recreateRenderTargets() {
         samples: 4,
     });
 
-    // WebSocket 텍스처들 재생성
-    const isJpegMode = uiSystem?.control.isJpegMode() ?? false;
-    recreateDepthTexture(isJpegMode);
+    // TextureManager handles depth texture recreation automatically via resize()
+    // No need to manually recreate depth texture here
 
-    // 모든 셰이더 유니폼 업데이트
+    // 모든 셰이더 유니폼 업데이트 (local textures only)
     updateShaderUniforms();
 
     debug.logMain(`[recreateRenderTargets] Completed for ${rtWidth}×${rtHeight}`);
 }
 
-// 모든 셰이더 유니폼 업데이트
+// 모든 셰이더 유니폼 업데이트 (local render target textures only)
+// WebSocket textures (wsColorTexture, wsDepthTexture) are managed by TextureManager
 function updateShaderUniforms() {
     // Fusion material 업데이트
     if (fusionMaterial) {
         fusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
         fusionMaterial.uniforms.localDepthSampler.value = localDepthTexture;
-        fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
     }
 
     // Debug material 업데이트
     if (debugMaterial) {
         debugMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
         debugMaterial.uniforms.localDepthSampler.value = localDepthTexture;
-        debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
         debugMaterial.uniforms.width.value = rtWidth;
         debugMaterial.uniforms.height.value = rtHeight;
     }
@@ -233,29 +187,11 @@ function updateShaderUniforms() {
     if (depthFusionMaterial) {
         depthFusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
         depthFusionMaterial.uniforms.localDepthSampler.value = localDepthTexture;
-        depthFusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
     }
 }
 
-// 카메라 종단비를 윈도우 크기에 맞게 업데이트
-function updateCameraAspectRatio() {
-    if (!camera) return;
-
-    const windowAspect = window.innerWidth / window.innerHeight;
-    camera.aspect = windowAspect;
-    camera.updateProjectionMatrix();
-
-    debug.logMain(`[updateCameraAspectRatio] Updated to ${windowAspect.toFixed(3)} (${rtWidth}×${rtHeight})`);
-
-    // Update UI displays
-    updateSizeDisplays();
-}
-
-// UI 크기 정보 업데이트
-function updateSizeDisplays() {
-    // Window size display removed - now handled by UISystem if needed
-    debug.logMain(`Window: ${window.innerWidth}×${window.innerHeight} (RT: ${rtWidth}×${rtHeight})`);
-}
+// updateCameraAspectRatio() removed - camera aspect ratio is managed automatically by RenderingContext
+// updateSizeDisplays() removed - UI displays are managed by UISystem
 
 // 새로운 해상도로 WebSocket 재연결
 function reconnectWithNewResolution() {
@@ -345,20 +281,14 @@ const cameraConfig = {
     target: new THREE.Vector3(0, 0, 0)
 };
 
-let renderStart = 0;
-let renderCnt = 0;
+// renderStart, renderCnt removed - FPS tracking now in LatencyTracker
 
 let canvas: HTMLCanvasElement;
 
-interface CameraBuffer {
-    position: Float32Array;
-    target: Float32Array;
-    intrinsics: Float32Array;
-    projection: Float32Array;
-}
+// CameraBuffer interface removed - not used
 
 let worker = new Worker(new URL("./decode-worker.ts", import.meta.url), { type: "module" })
-let workerReady = false;
+// workerReady removed - WebSocketSystem handles connection state
 
 // Worker error handler
 worker.onerror = (error) => {
@@ -383,7 +313,7 @@ worker.onmessage = ({ data }) => {
     }
 
     if (data.type === "ws-ready") {
-        workerReady = true;
+        // workerReady state tracking removed - WebSocketSystem handles this
         if (uiSystem) {
             uiSystem.setConnectionState('connected');
         }
@@ -391,7 +321,7 @@ worker.onmessage = ({ data }) => {
     }
 
     if (data.type === "ws-error") {
-        workerReady = false;
+        // workerReady removed - state handled by WebSocketSystem
         if (uiSystem) {
             uiSystem.setConnectionState('error');
         }
@@ -399,7 +329,7 @@ worker.onmessage = ({ data }) => {
     }
 
     if (data.type === "ws-close") {
-        workerReady = false;
+        // workerReady removed - state handled by WebSocketSystem
         if (uiSystem) {
             uiSystem.setConnectionState('closed');
         }
@@ -435,181 +365,9 @@ worker.onmessage = ({ data }) => {
         return;
     }
 
-    if (data.type === 'frame') {
-        wsColorTexture.image = data.image;
-        wsColorTexture.colorSpace = THREE.SRGBColorSpace;
-
-        // Depth 데이터 상세 로깅
-        const expectedSize = rtWidth * rtHeight;
-
-        debug.logMain(`Received frame ${data.frameId}: Color image ${data.image.width}×${data.image.height}`);
-
-        if (data.depth instanceof Uint8Array) {
-            // H264 모드 - depth는 Uint8Array (grayscale)
-            debug.logMain(`H264 depth array length: ${data.depth.length}, Expected: ${expectedSize} (${rtWidth}×${rtHeight})`);
-
-            if (data.depth.length !== expectedSize) {
-                debug.warn(`H264 depth array size mismatch! Got ${data.depth.length}, expected ${expectedSize}`);
-                debug.error(`wsDepthTexture size: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
-
-                // H264 모드도 JPEG와 동일하게 emergency recreation 수행
-                debug.logMain(`Recreating H264 depth texture to match data size...`);
-
-                // 실제 받은 데이터로부터 해상도 추정
-                const actualPixels = data.depth.length;
-                let actualWidth: number, actualHeight: number;
-
-                // 표준 해상도들 중에서 픽셀 수가 일치하는 것 찾기
-                const standardResolutions = [
-                    { w: 854, h: 480 },   // 480p = 409,920
-                    { w: 1280, h: 720 },  // 720p = 921,600  
-                    { w: 1920, h: 1080 }  // 1080p = 2,073,600
-                ];
-
-                const matchedRes = standardResolutions.find(res => res.w * res.h === actualPixels);
-
-                if (matchedRes) {
-                    actualWidth = matchedRes.w;
-                    actualHeight = matchedRes.h;
-                    debug.logMain(`Matched standard resolution: ${actualWidth}×${actualHeight}`);
-                } else {
-                    // 표준 해상도가 아닌 경우 정사각형으로 가정
-                    actualWidth = Math.sqrt(actualPixels);
-                    actualHeight = actualWidth;
-
-                    if (actualWidth !== Math.floor(actualWidth)) {
-                        debug.error(`Cannot determine resolution for ${actualPixels} pixels`);
-                        return; // 처리할 수 없는 경우 스킵
-                    }
-
-                    actualWidth = Math.floor(actualWidth);
-                    actualHeight = actualWidth;
-                    debug.logMain(`Using square resolution: ${actualWidth}×${actualHeight}`);
-                }
-
-                // 기존 텍스처 정리 및 새 텍스처 생성
-                wsDepthTexture.dispose();
-                wsDepthTexture = new THREE.DataTexture(data.depth, actualWidth, actualHeight, THREE.RedFormat, THREE.UnsignedByteType);
-
-                // 셰이더 유니폼 업데이트
-                if (fusionMaterial) {
-                    fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-                }
-                if (debugMaterial) {
-                    debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-                }
-
-                debug.logMain(`Emergency recreated H264 depth texture: ${actualWidth}×${actualHeight}`);
-
-            } else {
-                wsDepthTexture.image.data = data.depth;
-            }
-        } else if (data.depth instanceof Uint16Array) {
-            // JPEG 모드 - depth는 Uint16Array  
-            debug.logMain(`[Main] Depth array length: ${data.depth.length}, Expected: ${expectedSize}`);
-            debug.logMain(`[Main] Current stream resolution: ${rtWidth}×${rtHeight}`);
-
-            if (data.depth.length !== expectedSize) {
-                debug.error(`[Main] JPEG depth array size mismatch! Got ${data.depth.length}, expected ${expectedSize}`);
-                debug.error(`[Main] wsDepthTexture size: ${wsDepthTexture.image.width}×${wsDepthTexture.image.height}`);
-
-                // 크기가 맞지 않으면 텍스처를 다시 생성
-                debug.logMain(`[Main] Recreating JPEG depth texture to match data size...`);
-
-                // JPEG 모드도 H264와 동일한 해상도 추정 로직 사용
-                const actualPixels = data.depth.length;
-                let actualWidth: number, actualHeight: number;
-
-                // 표준 해상도들 중에서 픽셀 수가 일치하는 것 찾기
-                const standardResolutions = [
-                    { w: 854, h: 480 },   // 480p = 409,920
-                    { w: 1280, h: 720 },  // 720p = 921,600  
-                    { w: 1920, h: 1080 }  // 1080p = 2,073,600
-                ];
-
-                const matchedRes = standardResolutions.find(res => res.w * res.h === actualPixels);
-
-                if (matchedRes) {
-                    actualWidth = matchedRes.w;
-                    actualHeight = matchedRes.h;
-                    debug.logMain(`[Main] JPEG matched standard resolution: ${actualWidth}×${actualHeight}`);
-                } else {
-                    // 표준 해상도가 아닌 경우 정사각형으로 가정
-                    actualWidth = Math.sqrt(actualPixels);
-                    actualHeight = actualWidth;
-
-                    if (actualWidth !== Math.floor(actualWidth)) {
-                        debug.error(`[Main] Cannot determine JPEG resolution for ${actualPixels} pixels`);
-                        // 크기가 맞지 않아도 기존 데이터 사용
-                        wsDepthTexture.image.data = data.depth;
-                        return;
-                    }
-
-                    actualWidth = Math.floor(actualWidth);
-                    actualHeight = actualWidth;
-                    debug.logMain(`[Main] JPEG using square resolution: ${actualWidth}×${actualHeight}`);
-                }
-
-                // 기존 텍스처 정리 및 새 텍스처 생성
-                wsDepthTexture.dispose();
-                wsDepthTexture = new THREE.DataTexture(data.depth, actualWidth, actualHeight, THREE.RedFormat, THREE.HalfFloatType);
-
-                // 셰이더 유니폼 업데이트
-                if (fusionMaterial) {
-                    fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-                }
-                if (debugMaterial) {
-                    debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-                }
-
-                debug.logMain(`[Main] Emergency recreated JPEG depth texture: ${actualWidth}×${actualHeight}`);
-            } else {
-                wsDepthTexture.image.data = data.depth;
-            }
-        } else if (data.depth instanceof ImageBitmap) {
-            // H264 모드에서 ImageBitmap으로 전달된 depth 데이터 처리
-            debug.logMain(`[Main] H264 depth as ImageBitmap: ${data.depth.width}×${data.depth.height}`);
-
-            // ImageBitmap을 Uint8Array로 변환
-            const canvas = new OffscreenCanvas(data.depth.width, data.depth.height);
-            const ctx = canvas.getContext('2d')!;
-            ctx.drawImage(data.depth, 0, 0);
-
-            const imageData = ctx.getImageData(0, 0, data.depth.width, data.depth.height);
-            const pixels = imageData.data; // RGBA data
-
-            // RGBA에서 grayscale로 변환 (R채널만 사용)
-            const grayscaleData = new Uint8Array(data.depth.width * data.depth.height);
-            for (let i = 0; i < grayscaleData.length; i++) {
-                grayscaleData[i] = pixels[i * 4]; // R channel
-            }
-
-            debug.logMain(`[Main] Converted ImageBitmap to Uint8Array: ${grayscaleData.length} pixels`);
-
-            // 기존 텍스처와 크기가 다르면 새로 생성
-            if (wsDepthTexture.image.width !== data.depth.width || wsDepthTexture.image.height !== data.depth.height) {
-                debug.logMain(`[Main] Recreating depth texture for ImageBitmap: ${data.depth.width}×${data.depth.height}`);
-                wsDepthTexture.dispose();
-                wsDepthTexture = new THREE.DataTexture(grayscaleData, data.depth.width, data.depth.height, THREE.RedFormat, THREE.UnsignedByteType);
-
-                // 셰이더 유니폼 업데이트
-                if (fusionMaterial) {
-                    fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-                }
-                if (debugMaterial) {
-                    debugMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
-                }
-            } else {
-                wsDepthTexture.image.data = grayscaleData;
-            }
-        } else {
-            debug.error(`[Main] Unknown depth data type:`, typeof data.depth, data.depth.constructor.name);
-            debug.error(`[Main] Expected Uint8Array (H264), Uint16Array (JPEG), or ImageBitmap (H264), got:`, data.depth);
-        }
-
-        // Texture update tracking removed - now handled automatically by TextureManager
-        // TextureManager sets texture.needsUpdate when uploading new data
-
+    // Legacy 'frame' message handling removed - now handled by WebSocketSystem + TextureManager
+    // All texture updates are managed by TextureManager.updateFromVideoFrame()
+    if (data.type === 'frame' || data.type === 'video-frame') {
         // 디코딩 완료 시점 기록
         if (data.frameId && data.decodeCompleteTime) {
             latencyTracker.recordDecodeComplete(data.frameId);
@@ -698,8 +456,7 @@ async function initScene() {
     // Auto-load saved camera position if available
     CameraStateManager.load(camera, controls);
 
-    // Initialize UI displays
-    updateSizeDisplays();
+    // UI displays initialization removed - now handled by UISystem
 
     canvas = renderer.domElement as HTMLCanvasElement
 
@@ -758,8 +515,7 @@ async function initScene() {
 
         debug.logMain(`[Window Resize] Updated to ${rtWidth}×${rtHeight}, aspect: ${camera.aspect.toFixed(3)}`);
 
-        // Update UI displays
-        updateSizeDisplays();
+        // UI displays update removed - UISystem handles this automatically
     });
 
     localDepthTexture = new THREE.DepthTexture(rtWidth, rtHeight);
@@ -772,26 +528,16 @@ async function initScene() {
         samples: 4,
     });
 
-    wsColorTexture = new THREE.Texture()
-    wsColorTexture.minFilter = THREE.LinearFilter;
-    wsColorTexture.magFilter = THREE.LinearFilter;
-    wsColorTexture.colorSpace = THREE.SRGBColorSpace;
-
-    // Use the same initialIsJpegMode as worker initialization
-    if (initialIsJpegMode) {
-        // JPEG mode: Float16 data in Uint16Array format
-        wsDepthTexture = new THREE.DataTexture(new Uint16Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.HalfFloatType);
-    } else {
-        // H264 mode: Uint8Array grayscale data
-        wsDepthTexture = new THREE.DataTexture(new Uint8Array(rtWidth * rtHeight), rtWidth, rtHeight, THREE.RedFormat, THREE.UnsignedByteType);
-    }
+    // wsColorTexture and wsDepthTexture initialization removed
+    // TextureManager creates and manages both textures
+    // Shader materials will have wsColorSampler and wsDepthSampler set by TextureManager after initialization
 
     debugMaterial = new THREE.ShaderMaterial({
         uniforms: {
             localColorSampler: { value: localRenderTarget.texture },
             localDepthSampler: { value: localDepthTexture },
-            wsColorSampler: { value: wsColorTexture },
-            wsDepthSampler: { value: wsDepthTexture },
+            wsColorSampler: { value: null }, // Will be set by TextureManager
+            wsDepthSampler: { value: null }, // Will be set by TextureManager
             width: { value: rtWidth },
             height: { value: rtHeight },
         },
@@ -806,8 +552,8 @@ async function initScene() {
         uniforms: {
             localColorSampler: { value: localRenderTarget.texture },
             localDepthSampler: { value: localDepthTexture },
-            wsColorSampler: { value: wsColorTexture },
-            wsDepthSampler: { value: wsDepthTexture },
+            wsColorSampler: { value: null }, // Will be set by TextureManager
+            wsDepthSampler: { value: null }, // Will be set by TextureManager
             wsFlipX: { value: true }, // X축 flip 활성화
             fusionFlipX: { value: true }, // X축 flip 활성화
             contrast: { value: 1.0 }, // 대비 조정 (1.0보다 작게)
@@ -833,7 +579,7 @@ async function initScene() {
     // Gaussian-only scene setup
     gaussianOnlyMaterial = new THREE.ShaderMaterial({
         uniforms: {
-            wsColorSampler: { value: wsColorTexture }
+            wsColorSampler: { value: null } // Will be set by TextureManager
         },
         vertexShader: fusionVertexShader,
         fragmentShader: gaussianOnlyFragmentShader,
@@ -867,8 +613,8 @@ async function initScene() {
         uniforms: {
             localColorSampler: { value: localRenderTarget.texture },
             localDepthSampler: { value: localDepthTexture },
-            wsColorSampler: { value: wsColorTexture },
-            wsDepthSampler: { value: wsDepthTexture },
+            wsColorSampler: { value: null }, // Will be set by TextureManager
+            wsDepthSampler: { value: null }, // Will be set by TextureManager
             wsFlipX: { value: true },
             fusionFlipX: { value: true },
         },
@@ -894,7 +640,7 @@ let app: Application | null = null;
 let uiSystem: UISystem | null = null;
 
 initScene().then(async () => {
-    renderStart = performance.now()
+    // renderStart removed - FPS tracking now in LatencyTracker
 
     // UI 컨트롤러 활성화
     debug.logMain('UI Controller initialized:', uiController.isVisible())
@@ -938,40 +684,35 @@ initScene().then(async () => {
 
         debug.logMain('[Init] UISystem initialized successfully');
 
-        // Connect TextureManager textures to rendering
+        // Register shader materials with RenderingContext
         if (app) {
+            const renderingContext = app.getRenderingContext();
+            if (renderingContext) {
+                if (fusionMaterial) {
+                    renderingContext.registerMaterial('fusion', fusionMaterial);
+                    debug.logMain('[Init] Registered fusion material');
+                }
+                if (debugMaterial) {
+                    renderingContext.registerMaterial('debug', debugMaterial);
+                    debug.logMain('[Init] Registered debug material');
+                }
+                if (depthFusionMaterial) {
+                    renderingContext.registerMaterial('depthFusion', depthFusionMaterial);
+                    debug.logMain('[Init] Registered depthFusion material');
+                }
+                if (gaussianOnlyMaterial) {
+                    renderingContext.registerMaterial('gaussianOnly', gaussianOnlyMaterial);
+                    debug.logMain('[Init] Registered gaussianOnly material');
+                }
+                debug.logMain('[Init] All shader materials registered with RenderingContext');
+            }
+
+            // Initialize shader materials with textures
+            // TextureManager now handles all texture assignment automatically
             const texManager = app.getTextureManager();
             if (texManager) {
-                const newColorTexture = texManager.getColorTexture();
-                const newDepthTexture = texManager.getDepthTexture();
-
-                if (newColorTexture && newDepthTexture) {
-                    // Update all shader materials to use new textures
-                    if (fusionMaterial) {
-                        fusionMaterial.uniforms.wsColorSampler.value = newColorTexture;
-                        fusionMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
-                        debug.logMain('[TextureManager] FusionMaterial updated');
-                    }
-
-                    if (debugMaterial) {
-                        debugMaterial.uniforms.wsColorSampler.value = newColorTexture;
-                        debugMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
-                        debug.logMain('[TextureManager] DebugMaterial updated');
-                    }
-
-                    if (gaussianOnlyMaterial) {
-                        gaussianOnlyMaterial.uniforms.wsColorSampler.value = newColorTexture;
-                        debug.logMain('[TextureManager] GaussianOnlyMaterial updated');
-                    }
-
-                    if (depthFusionMaterial) {
-                        depthFusionMaterial.uniforms.wsColorSampler.value = newColorTexture;
-                        depthFusionMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
-                        debug.logMain('[TextureManager] DepthFusionMaterial updated');
-                    }
-
-                    debug.logMain('[TextureManager] All materials using TextureManager textures');
-                }
+                texManager.initializeShaderMaterials();
+                debug.logMain('[Init] TextureManager initialized shader materials');
             }
         }
 
