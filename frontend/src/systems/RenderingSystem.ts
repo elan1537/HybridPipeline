@@ -6,14 +6,8 @@
 import * as THREE from 'three';
 import type { OrbitControls } from 'three/addons';
 import type { System, SystemContext } from '../types';
+import { RenderMode } from '../types';
 import { debug } from '../debug-logger';
-
-export enum RenderMode {
-    FUSION = 'FUSION',
-    GAUSSIAN_ONLY = 'GAUSSIAN_ONLY',
-    LOCAL_ONLY = 'LOCAL_ONLY',
-    DEPTH_FUSION = 'DEPTH_FUSION',
-}
 
 export interface RenderingConfig {
     // Scenes
@@ -21,6 +15,7 @@ export interface RenderingConfig {
     fusionScene: THREE.Scene;
     debugScene: THREE.Scene;
     gaussianOnlyScene: THREE.Scene;
+    localOnlyScene: THREE.Scene;
     depthFusionScene: THREE.Scene;
 
     // Cameras
@@ -28,6 +23,7 @@ export interface RenderingConfig {
     orthoCamera: THREE.OrthographicCamera;
     debugCamera: THREE.OrthographicCamera;
     gaussianOnlyCamera: THREE.OrthographicCamera;
+    localOnlyCamera: THREE.OrthographicCamera;
     depthFusionCamera: THREE.OrthographicCamera;
 
     // Render targets
@@ -53,6 +49,7 @@ export class RenderingSystem implements System {
 
     // State
     private currentRenderMode: RenderMode = RenderMode.FUSION;
+    private isDepthDebugEnabled = false;
     private frameCounter = 0;
     private currentTimeIndex = 0;
     private isPlaying = false;
@@ -88,6 +85,14 @@ export class RenderingSystem implements System {
     setRenderMode(mode: RenderMode): void {
         this.currentRenderMode = mode;
         debug.logMain(`[RenderingSystem] Render mode: ${mode}`);
+    }
+
+    /**
+     * Enable/disable depth debug visualization
+     */
+    setDepthDebugEnabled(enabled: boolean): void {
+        this.isDepthDebugEnabled = enabled;
+        debug.logMain(`[RenderingSystem] Depth debug: ${enabled ? 'enabled' : 'disabled'}`);
     }
 
     /**
@@ -159,38 +164,56 @@ export class RenderingSystem implements System {
      */
     render(): void {
         this.renderCnt++;
-        // Depth debug checkbox removed - now controlled by currentRenderMode
-        // If depth debug is needed, it should be added as a separate RenderMode
-        {
-            switch (this.currentRenderMode) {
-                case RenderMode.FUSION:
-                    this.renderer.setRenderTarget(this.config.localRenderTarget);
-                    this.renderer.render(this.config.localScene, this.config.camera);
-                    this.renderer.setRenderTarget(null);
-                    this.renderer.render(this.config.fusionScene, this.config.orthoCamera);
-                    break;
 
-                case RenderMode.GAUSSIAN_ONLY:
-                    this.renderer.render(
-                        this.config.gaussianOnlyScene,
-                        this.config.gaussianOnlyCamera
-                    );
-                    break;
+        // Depth debug mode: Show debug scene with depth visualization
+        if (this.isDepthDebugEnabled) {
+            this.renderer.render(this.config.debugScene, this.config.debugCamera);
+            return;
+        }
 
-                case RenderMode.LOCAL_ONLY:
-                    this.renderer.render(this.config.localScene, this.config.camera);
-                    break;
+        // Normal rendering based on current mode
+        switch (this.currentRenderMode) {
+            case RenderMode.FUSION:
+                this.renderer.setRenderTarget(this.config.localRenderTarget);
+                this.renderer.render(this.config.localScene, this.config.camera);
+                this.renderer.setRenderTarget(null);
+                this.renderer.render(this.config.fusionScene, this.config.orthoCamera);
+                break;
 
-                case RenderMode.DEPTH_FUSION:
-                    this.renderer.setRenderTarget(this.config.localRenderTarget);
-                    this.renderer.render(this.config.localScene, this.config.camera);
-                    this.renderer.setRenderTarget(null);
-                    this.renderer.render(
-                        this.config.depthFusionScene,
-                        this.config.depthFusionCamera
-                    );
-                    break;
-            }
+            case RenderMode.GAUSSIAN_ONLY:
+                this.renderer.render(
+                    this.config.gaussianOnlyScene,
+                    this.config.gaussianOnlyCamera
+                );
+                break;
+
+            case RenderMode.LOCAL_ONLY:
+                // Render local scene to render target first
+                this.renderer.setRenderTarget(this.config.localRenderTarget);
+                this.renderer.render(this.config.localScene, this.config.camera);
+                this.renderer.setRenderTarget(null);
+                // Display via post-processing quad (same colorspace as Fusion)
+                this.renderer.render(this.config.localOnlyScene, this.config.localOnlyCamera);
+                break;
+
+            case RenderMode.DEPTH_FUSION:
+                this.renderer.setRenderTarget(this.config.localRenderTarget);
+                this.renderer.render(this.config.localScene, this.config.camera);
+                this.renderer.setRenderTarget(null);
+                this.renderer.render(
+                    this.config.depthFusionScene,
+                    this.config.depthFusionCamera
+                );
+                break;
+
+            case RenderMode.FEED_FORWARD:
+                // Feed-forward mode: Render Gaussian only (similar to GAUSSIAN_ONLY)
+                // Time control is handled via time_index in camera updates
+                this.renderer.render(
+                    this.config.gaussianOnlyScene,
+                    this.config.gaussianOnlyCamera
+                );
+                break;
         }
     }
 
