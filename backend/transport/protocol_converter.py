@@ -43,22 +43,29 @@ def parse_frontend_camera(
     device: str = "cpu"  # Ignored for numpy implementation
 ) -> CameraFrame:
     """
-    Parse Frontend WebSocket camera data (160 bytes) to CameraFrame.
+    Parse Frontend WebSocket camera data (260 bytes) to CameraFrame.
 
-    Frontend format (160 bytes):
-      [0:128]   - Camera data (32 floats):
-                  - eye (3), target (3), intrinsics (9), padding (1), projection (16)
-      [128:132] - frame_id (uint32)
-      [132:136] - padding (4 bytes)
-      [136:144] - client_timestamp (float64)
-      [144:148] - time_index (float32)
-      [148:160] - padding (12 bytes)
+    Protocol v3 (260 bytes):
+        Camera data (224 bytes = 56 floats):
+            - view_matrix: 16 floats (0-15) - Camera→World transform
+            - projection_matrix: 16 floats (16-31) - Camera→Clip transform
+            - intrinsics: 9 floats (32-40) - Pixel-space intrinsics (3×3)
+            - position: 3 floats (41-43) - Camera position in world space
+            - target: 3 floats (44-46) - Camera target (lookAt point) in world space
+            - up: 3 floats (47-49) - Camera up vector
+            - reserved: 6 floats (50-55)
+        Metadata (36 bytes):
+            - frame_id: 4 bytes (224-228)
+            - padding: 4 bytes (228-232)
+            - client_timestamp: 8 bytes (232-240)
+            - time_index: 4 bytes (240-244)
+            - padding: 16 bytes (244-260)
 
     Note: near and far clipping planes are extracted from the projection matrix.
           If extraction fails, the provided near/far arguments are used as fallback.
 
     Args:
-        raw: 224-byte camera data from Frontend (Protocol v2)
+        raw: 260-byte camera data from Frontend (Protocol v3)
         width: Viewport width
         height: Viewport height
         near: Near clipping plane (default, may be overridden)
@@ -66,34 +73,21 @@ def parse_frontend_camera(
         device: Device (ignored, kept for API compatibility)
 
     Returns:
-        CameraFrame object with numpy arrays
+        CameraFrame object with numpy arrays (including position, target, up)
 
     Raises:
         ValueError: If data size is incorrect
-
-    Protocol v2 (224 bytes):
-        Camera data (192 bytes = 48 floats):
-            - view_matrix: 16 floats (0-15)
-            - projection_matrix: 16 floats (16-31)
-            - intrinsics: 9 floats (32-40)
-            - reserved: 7 floats (41-47)
-        Metadata (32 bytes):
-            - frame_id: 4 bytes (192-196)
-            - padding: 4 bytes (196-200)
-            - client_timestamp: 8 bytes (200-208)
-            - time_index: 4 bytes (208-212)
-            - padding: 12 bytes (212-224)
     """
-    if len(raw) != 224:
-        raise ValueError(f"Invalid camera data size: {len(raw)} (expected 224, got {len(raw)})")
+    if len(raw) != 260:
+        raise ValueError(f"Invalid camera data size: {len(raw)} (expected 260, got {len(raw)})")
 
-    # Parse camera data (192 bytes = 48 floats)
-    camera_data = struct.unpack("<48f", raw[:192])
+    # Parse camera data (224 bytes = 56 floats)
+    camera_data = struct.unpack("<56f", raw[:224])
 
     # Parse metadata
-    frame_id = struct.unpack_from("<I", raw, 192)[0]
-    client_timestamp = struct.unpack_from("<d", raw, 200)[0]
-    time_index = struct.unpack_from("<f", raw, 208)[0]
+    frame_id = struct.unpack_from("<I", raw, 224)[0]
+    client_timestamp = struct.unpack_from("<d", raw, 232)[0]
+    time_index = struct.unpack_from("<f", raw, 240)[0]
 
     # Frame counting for logging
     if not hasattr(parse_frontend_camera, 'frame_count'):
@@ -115,6 +109,11 @@ def parse_frontend_camera(
         [intrinsics_vals[6], intrinsics_vals[7], intrinsics_vals[8]]
     ], dtype=np.float32)
 
+    # Extract position, target, up (indices 41-49) - Protocol v3
+    position = np.array(camera_data[41:44], dtype=np.float32)
+    target = np.array(camera_data[44:47], dtype=np.float32)
+    up = np.array(camera_data[47:50], dtype=np.float32)
+
     # Extract near/far from projection matrix (optional)
     # THREE.js projection matrix format (column-major):
     # P[2,2] = -(far+near)/(far-near), P[2,3] = -2*far*near/(far-near)
@@ -133,9 +132,12 @@ def parse_frontend_camera(
 
     # Log for debugging (first 3 frames or every 60 frames)
     if parse_frontend_camera.frame_count <= 3 or parse_frontend_camera.frame_count % 60 == 0:
-        print(f"\n[Transport] Frame {frame_id} (Protocol v2):")
+        print(f"\n[Transport] Frame {frame_id} (Protocol v3):")
         print(f"  view_matrix:\n{view_matrix}")
         print(f"  intrinsics:\n{intrinsics}")
+        print(f"  position: {position}")
+        print(f"  target: {target}")
+        print(f"  up: {up}")
         print(f"  near={near:.3f}, far={far:.3f}")
         print(f"  time_index={time_index:.6f}")
 
@@ -149,6 +151,9 @@ def parse_frontend_camera(
         height=height,
         near=near,
         far=far,
+        position=position,             # (3,) numpy array - camera position
+        target=target,                 # (3,) numpy array - lookAt target
+        up=up,                         # (3,) numpy array - up vector
         time_index=time_index,
         frame_id=frame_id,
         client_timestamp=client_timestamp,

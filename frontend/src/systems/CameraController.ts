@@ -230,7 +230,7 @@ export class CameraController implements System {
     if (!this.camera) {
       return new THREE.Matrix4();
     }
-    return this.camera.matrixWorldInverse.clone();
+    return this.camera.matrixWorld.clone();
   }
 
   /**
@@ -245,22 +245,29 @@ export class CameraController implements System {
 
   /**
    * Get camera frame for sending to server
-   * Protocol v2: Direct matrix transmission
+   * Protocol v3: Matrix + position/target
    *
-   * - view: camera.matrixWorldInverse (world → camera transform)
+   * - view: camera.matrixWorld (camera → world transform)
    * - projection: camera.projectionMatrix (camera → clip transform)
    * - intrinsics: getCameraIntrinsics() (pixel-space, distortion-free)
+   * - position: camera.position (world space)
+   * - target: controls.target (lookAt point, world space)
+   * - up: camera.up (up vector)
    *
    * @param timeIndex Time index for dynamic gaussians (0.0-1.0)
    */
   getCameraFrame(timeIndex: number = 0): CameraFrame {
-    if (!this.camera) {
-      throw new Error('[CameraController] getCameraFrame: Camera not initialized');
+    if (!this.camera || !this.controls) {
+      throw new Error('[CameraController] getCameraFrame: Camera or controls not initialized');
     }
 
-    // View matrix: world → camera transform (matrixWorldInverse)
+    // CRITICAL: Update camera matrices before reading
+    // This ensures matrixWorld and matrixWorldInverse reflect current position/rotation
+    this.camera.updateMatrixWorld(true);
+
+    // View matrix: Camera → World transform (matrixWorld)
     const view = new Float32Array(
-      this.camera.matrixWorldInverse.toArray()
+      this.camera.matrixWorld.toArray()
     );
 
     // Projection matrix: camera → clip transform
@@ -269,13 +276,29 @@ export class CameraController implements System {
     );
 
     // Intrinsics: pixel-space camera parameters (distortion-free)
-    // This uses the legacy calculation to match Gaussian training parameters
     const intrinsics = new Float32Array(this.getCameraIntrinsics());
+
+    // Position, target, up for lookAt-based rendering
+    // TEMPORARY: Flip Y-axis for position and target to match backend coordinate system
+    const position = new Float32Array([
+      this.camera.position.x,
+      -this.camera.position.y,  // Flip Y
+      this.camera.position.z
+    ]);
+    const target = new Float32Array([
+      this.controls.target.x,
+      -this.controls.target.y,  // Flip Y
+      this.controls.target.z
+    ]);
+    const up = new Float32Array(this.camera.up.toArray());
 
     return {
       view,
       projection,
       intrinsics,
+      position,
+      target,
+      up,
       frameId: this.frameId++,
       timestamp: performance.now(),
       timeIndex,

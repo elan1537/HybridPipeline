@@ -9,6 +9,7 @@
 - 실시간 스트리밍 (WebSocket)
 - 인코딩 지원 (JPEG+Depth, H.264, Raw)
 - 확장 가능한 아키텍처 (Protocol Adapter Pattern)
+- Feed-forward 렌더링 (프레임별 PLY 동적 로딩, 시간 제어)
 
 ---
 
@@ -42,6 +43,29 @@ Renderer Service (Python/PyTorch/CUDA)
    - BaseSceneRenderer 인터페이스로 새로운 렌더러 추가
    - BaseEncoder 인터페이스로 새로운 인코더 추가
    - Protocol Adapter Pattern으로 WebSocket/WebRTC/UDP 지원
+
+### Frontend 아키텍처 (Application + Systems 패턴)
+
+```
+Application (core/Application.ts)
+  ├─ WebSocketSystem: WebSocket 통신 및 디코딩
+  ├─ CameraController: 카메라 제어 및 상태 관리
+  ├─ RenderingSystem: 렌더링 루프 및 모드 전환
+  ├─ TextureManager: 텍스처 생성 및 업데이트
+  ├─ UISystem: UI 컴포넌트 관리
+  └─ PhysicsSystem: Mesh-Gaussian 충돌 감지
+
+UISystem
+  ├─ panels/: ControlPanel, DebugPanel, StatsPanel, FPSTestPanel, RecordingPanel
+  ├─ managers/: CameraStateManager, SettingsManager
+  └─ components/: FrameScrubber, TimeControlUI
+```
+
+**설계 원칙**:
+- **명확한 책임 분리**: 각 System은 단일 책임 원칙 준수
+- **느슨한 결합**: System 간 의존성 최소화
+- **높은 응집도**: 관련 기능을 System 내부에 캡슐화
+- **확장 가능성**: 새로운 System 추가가 용이
 
 ---
 
@@ -111,6 +135,8 @@ H.264/Raw format:
 **Scene Renderers**:
 - ✅ `static_gaussian.py`: GsplatRenderer (gsplat 라이브러리)
 - ✅ `streamable_gaussian.py`: StreamableGaussian (3DGStream + NTC)
+  - Training mode: NTC 기반 실시간 최적화
+  - Inference mode: 프레임별 PLY 동적 로딩 (feed-forward)
 - ✅ `base.py`: BaseSceneRenderer 추상 인터페이스
 
 **Encoders**:
@@ -175,6 +201,37 @@ Success:  100.0%
 - `backend/transport/input/`: Transport 수신 데이터
 - `output/`: Client 수신 데이터
 
+#### Frontend (Browser/TypeScript)
+
+**Core Systems**:
+- ✅ `Application.ts`: 메인 애플리케이션 및 System 관리
+- ✅ `WebSocketSystem.ts`: WebSocket 통신 및 비디오 디코딩
+- ✅ `CameraController.ts`: 카메라 제어 및 상태 관리
+- ✅ `RenderingSystem.ts`: 렌더링 루프 및 모드 전환
+- ✅ `TextureManager.ts`: 텍스처 생성 및 업데이트
+- ✅ `UISystem.ts`: UI 컴포넌트 관리
+- ✅ `PhysicsSystem.ts`: Mesh-Gaussian 충돌 감지
+
+**Render Modes**:
+- ✅ `fusion`: Gaussian + Local Mesh 합성
+- ✅ `gaussian-only`: Gaussian Splatting만 표시
+- ✅ `local-only`: Local Mesh만 표시
+- ✅ `depth-fusion`: Depth 기반 합성
+- ✅ `feed-forward`: 프레임별 렌더링 (시간 제어)
+
+**UI Components**:
+- ✅ `panels/`: ControlPanel, DebugPanel, StatsPanel, FPSTestPanel, RecordingPanel
+- ✅ `managers/`: CameraStateManager, SettingsManager
+- ✅ `ui/`: FrameScrubber, TimeControlUI
+- ✅ `physics/`: MeshGaussianCollision
+
+**주요 기능**:
+- ✅ 실시간/Feed-forward 모드 전환
+- ✅ 프레임 Scrubbing (시간 제어)
+- ✅ 카메라 상태 저장/불러오기
+- ✅ 화면 녹화 및 FPS 측정
+- ✅ WebSocket 자동 재연결
+
 ---
 
 ## 사용 방법
@@ -189,12 +246,20 @@ python -m renderer.main \
   --encoder-type jpeg \
   --save-debug-output
 
-# Streamable Gaussian (4DGS/3DGStream)
+# Streamable Gaussian (Training mode)
 python -m renderer.main \
   --scene-type streamable \
   --model-path /path/to/scene.ply \
   --ntc-path /path/to/ntc.pth \
   --ntc-config /path/to/config.json \
+  --encoder-type h264
+
+# Streamable Gaussian (Inference mode - Feed-forward)
+python -m renderer.main \
+  --scene-type streamable \
+  --model-path /path/to/initial_scene.ply \
+  --weight-path-pattern '/path/to/checkpoints/frame_{frame_id:06d}/gaussian.ply' \
+  --checkpoints-dir /path/to/checkpoints \
   --encoder-type h264
 
 # 옵션
@@ -268,6 +333,28 @@ backend/
 │       └── unix_socket_adapter.py      # Unix Socket server
 │
 └── test_client.py                      # Mock WebSocket client
+
+frontend/
+├── src/
+│   ├── core/
+│   │   └── Application.ts              # 메인 애플리케이션
+│   ├── systems/
+│   │   ├── WebSocketSystem.ts          # WebSocket 통신
+│   │   ├── CameraController.ts         # 카메라 제어
+│   │   ├── RenderingSystem.ts          # 렌더링 루프
+│   │   ├── TextureManager.ts           # 텍스처 관리
+│   │   ├── UISystem.ts                 # UI 컴포넌트 관리
+│   │   └── PhysicsSystem.ts            # 충돌 감지
+│   ├── ui/
+│   │   ├── panels/                     # UI 패널들
+│   │   ├── managers/                   # 상태 관리자들
+│   │   ├── FrameScrubber.ts            # 프레임 scrubber
+│   │   └── TimeControlUI.ts            # 시간 제어 UI
+│   ├── physics/
+│   │   └── MeshGaussianCollision.ts    # 충돌 감지
+│   ├── main.ts                         # 진입점
+│   └── types/index.ts                  # 타입 정의
+└── index.html                          # HTML 진입점
 ```
 
 ---
@@ -350,6 +437,22 @@ websockets
 - **이유**: 실시간 스트리밍에서는 최신 프레임이 중요
 - **대안**: FIFO buffer (순차 처리 필요 시)
 
+### 6. Frontend Application + Systems 패턴
+- **이유**: main.ts (1481줄 감소) 복잡도 해소, 유지보수성 향상
+- **효과**:
+  - 각 System의 명확한 책임 분리
+  - 테스트 용이성 증가
+  - 새로운 기능 추가 시 영향 범위 최소화
+- **트레이드오프**: 초기 구조 설계 비용 증가
+
+### 7. Feed-forward Rendering Mode
+- **이유**: 프리렌더링된 시퀀스 재생 및 시간 제어 필요
+- **구현**:
+  - Backend: weight_path_pattern으로 프레임별 PLY 동적 로딩
+  - Frontend: time_index를 통한 프레임 제어
+  - Training/Inference mode 명확히 분리
+- **효과**: 실시간 최적화 없이 고품질 프리렌더링 시퀀스 재생
+
 ---
 
 ## 알려진 이슈
@@ -373,20 +476,23 @@ websockets
 - [ ] Multi-container 환경 구성
 - [ ] Volume mount 설정 (`/run/ipc`)
 
-### 우선순위 2: Frontend 통합
-- [ ] Three.js 렌더러 통합
-- [ ] Camera control 구현
-- [ ] Depth visualization
-
-### 우선순위 3: 성능 최적화
+### 우선순위 2: 성능 최적화
 - [ ] Zero-copy buffer sharing
 - [ ] GPU Direct communication
 - [ ] Batch processing (multiple cameras)
+- [ ] PLY 로딩 캐싱 (feed-forward mode)
 
-### 우선순위 4: 테스트 강화
-- [ ] 유닛 테스트 작성 (pytest)
+### 우선순위 3: 테스트 강화
+- [ ] 유닛 테스트 작성 (pytest, jest)
 - [ ] 부하 테스트 (sustained 60 FPS)
+- [ ] E2E 테스트 자동화
 - [ ] 에러 복구 테스트
+
+### 우선순위 4: 기능 확장
+- [ ] WebRTC adapter 추가
+- [ ] Multi-view 렌더링
+- [ ] 실시간 편집 기능
+- [ ] 품질 프로파일 (Low/Medium/High)
 
 ---
 
@@ -422,7 +528,36 @@ websockets
 - 10 frames 테스트 → 100% success
 - 전체 파이프라인 검증 완료
 
-**현재 진행률**: MVP 100% 완료
+### 2025-10-30: Frontend 모듈화 및 Feed-forward 렌더링 통합 ✅
+
+**Frontend 리팩토링** (Commit: 1cfda79):
+- main.ts → Application + Systems 패턴으로 분리 (1481줄 감소)
+- 새로운 시스템 추가:
+  - UISystem: UI 컴포넌트 관리 및 이벤트 처리
+  - PhysicsSystem: Mesh-Gaussian 충돌 감지
+  - TextureManager 렌더링 파이프라인 통합
+- UI 컴포넌트화:
+  - panels/: 5개 패널 (Control, Debug, Stats, FPSTest, Recording)
+  - managers/: CameraStateManager, SettingsManager
+  - ui/: FrameScrubber, TimeControlUI
+  - physics/: MeshGaussianCollision
+- 타입 안정성 및 코드 품질 개선
+
+**Feed-forward 렌더링 통합** (Commit: e58a3fe):
+- Backend:
+  - StreamableGaussian inference mode 추가
+  - weight_path_pattern: 프레임별 PLY 동적 로딩
+  - Training/Inference mode 명확히 분리
+  - CLI: --weight-path-pattern, --checkpoints-dir 옵션
+- Frontend:
+  - feed-forward render mode 추가
+  - Time index 제어 및 프레임 scrubbing
+  - 실시간/프리로드 모드 전환 UI
+- Protocol:
+  - time_index 전송 안정성 개선
+  - 프레임 타이밍 정확도 향상
+
+**현재 진행률**: Phase 2 완료 (Frontend 통합 + Feed-forward 렌더링)
 
 ---
 
@@ -430,13 +565,28 @@ websockets
 
 - `architecture.md`: 상세 아키텍처 설계 문서
 - `TEST.md`: 테스트 계획 및 결과
+- `FEED_FORWARD_INTEGRATION.md`: Feed-forward 렌더링 통합 가이드
+- `REFACTORING.camera.md`: 카메라 리팩토링 문서
+- `TROUBLESHOOTING.md`: 문제 해결 가이드
+- `feature.collision.md`: 충돌 감지 기능 문서
 - `research/`: 연구용 코드 및 실험
 
 ---
 
-## 연락처 및 이슈
+## 프로젝트 상태
 
-- 프로젝트: HybridPipeline
-- 날짜: 2025-10-22
-- 상태: MVP Complete, Production Ready
-- 현재까지 진행상황을 저장해줘.
+- **프로젝트**: HybridPipeline
+- **최종 업데이트**: 2025-10-30
+- **현재 상태**: Phase 2 Complete
+- **브랜치**: feature/collision-detect
+- **최근 커밋**:
+  - `e58a3fe`: feat: Feed-forward 렌더링 통합
+  - `1cfda79`: refactor: Frontend 모듈화 아키텍처 구축
+  - `d8e1ab2`: refactor: Extract renderLoop to RenderingSystem
+
+**완료된 Phase**:
+- ✅ Phase 1: MVP (Backend 3-Tier 아키텍처)
+- ✅ Phase 2: Frontend 통합 + Feed-forward 렌더링
+
+**다음 Phase**:
+- Phase 3: 성능 최적화 및 Docker Compose 통합

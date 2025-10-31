@@ -14,17 +14,23 @@ import * as THREE from "three";
 
 /**
  * Camera frame data sent to the backend
- * Total size: 224 bytes when serialized
+ * Total size: 260 bytes when serialized
  *
- * Protocol v2: Direct matrix transmission for zero-distortion rendering
- * - view: World → Camera transform (matrixWorldInverse)
+ * Protocol v3: Matrix + position/target for flexible rendering
+ * - view: Camera → World transform (matrixWorld)
  * - projection: Camera → Clip transform (projectionMatrix)
  * - intrinsics: Pixel-space camera intrinsics (from getCameraIntrinsics)
+ * - position: Camera position in world space
+ * - target: Camera target (lookAt point) in world space
+ * - up: Camera up vector
  */
 export interface CameraFrame {
   view: Float32Array;        // 16 floats - view matrix (4×4)
   projection: Float32Array;  // 16 floats - projection matrix (4×4)
   intrinsics: Float32Array;  // 9 floats - intrinsics matrix (3×3)
+  position: Float32Array;    // 3 floats - camera position
+  target: Float32Array;      // 3 floats - camera target (lookAt)
+  up: Float32Array;          // 3 floats - camera up vector
   frameId: number;
   timestamp: number;
   timeIndex: number;

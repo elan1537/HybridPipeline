@@ -26,7 +26,7 @@ from renderer.data_types import CameraFrame, RenderPayload
 # Camera Frame Protocol (Frontend ↔ Transport ↔ Renderer)
 # =============================================================================
 
-CAMERA_FRAME_SIZE = 168  # bytes
+CAMERA_FRAME_SIZE = 204  # bytes (Protocol v3: includes position, target, up)
 CONTROL_MESSAGE_SIZE = 8  # bytes (legacy, for backward compatibility)
 CONTROL_MESSAGE_EXT_SIZE = 12  # bytes (extended with parameter)
 
@@ -59,7 +59,7 @@ Commands:
 - 2: Change encoder type - 12 bytes
   * param: 0=JPEG, 1=H264, 2=Raw
 
-Camera Frame Wire Format (168 bytes):
+Camera Frame Wire Format (204 bytes, Protocol v3):
 
 Offset  Size  Type     Field
 ------  ----  -------  ------------------
@@ -74,21 +74,24 @@ Offset  Size  Type     Field
 124     4     -        padding (alignment)
 128     8     float64  client_timestamp
 136     8     float64  server_timestamp
-144     24    -        reserved (future use)
+144     12    float32  position (3 floats - camera position)
+156     12    float32  target (3 floats - lookAt target)
+168     12    float32  up (3 floats - up vector)
+180     24    -        reserved (future use)
 ------
-Total:  168 bytes
+Total:  204 bytes
 """
 
 
 def pack_camera_frame(camera: CameraFrame) -> bytes:
     """
-    Serialize CameraFrame to wire format (168 bytes).
+    Serialize CameraFrame to wire format (204 bytes, Protocol v3).
 
     Args:
-        camera: CameraFrame object
+        camera: CameraFrame object (with position, target, up)
 
     Returns:
-        bytes: 168-byte packed camera data
+        bytes: 204-byte packed camera data
 
     Raises:
         ValueError: If camera parameters are invalid
@@ -103,9 +106,15 @@ def pack_camera_frame(camera: CameraFrame) -> bytes:
     if TORCH_AVAILABLE and isinstance(camera.view_matrix, torch.Tensor):
         view_matrix = camera.view_matrix.cpu().numpy()
         intrinsics = camera.intrinsics.cpu().numpy()
+        position = camera.position.cpu().numpy() if camera.position is not None else np.zeros(3, dtype=np.float32)
+        target = camera.target.cpu().numpy() if camera.target is not None else np.zeros(3, dtype=np.float32)
+        up = camera.up.cpu().numpy() if camera.up is not None else np.array([0, 1, 0], dtype=np.float32)
     else:
         view_matrix = camera.view_matrix
         intrinsics = camera.intrinsics
+        position = camera.position if camera.position is not None else np.zeros(3, dtype=np.float32)
+        target = camera.target if camera.target is not None else np.zeros(3, dtype=np.float32)
+        up = camera.up if camera.up is not None else np.array([0, 1, 0], dtype=np.float32)
 
     # Pack view matrix (64 bytes)
     view_bytes = view_matrix.astype(np.float32).tobytes()
@@ -113,7 +122,7 @@ def pack_camera_frame(camera: CameraFrame) -> bytes:
     # Pack intrinsics (36 bytes)
     intrinsics_bytes = intrinsics.astype(np.float32).tobytes()
 
-    # Pack metadata
+    # Pack metadata (44 bytes)
     metadata_bytes = struct.pack("<IIfffIIdd",
         camera.width,                                    # uint32
         camera.height,                                   # uint32
@@ -126,21 +135,26 @@ def pack_camera_frame(camera: CameraFrame) -> bytes:
         camera.server_timestamp if camera.server_timestamp else 0.0   # float64
     )
 
+    # Pack position, target, up (36 bytes total)
+    position_bytes = position.astype(np.float32).tobytes()  # 12 bytes
+    target_bytes = target.astype(np.float32).tobytes()      # 12 bytes
+    up_bytes = up.astype(np.float32).tobytes()              # 12 bytes
+
     # Reserved space (24 bytes)
     reserved = b'\x00' * 24
 
-    return view_bytes + intrinsics_bytes + metadata_bytes + reserved
+    return view_bytes + intrinsics_bytes + metadata_bytes + position_bytes + target_bytes + up_bytes + reserved
 
 
 def parse_camera_frame(data: bytes) -> CameraFrame:
     """
-    Parse wire format to CameraFrame (168 bytes).
+    Parse wire format to CameraFrame (204 bytes, Protocol v3).
 
     Args:
-        data: 168-byte camera data
+        data: 204-byte camera data
 
     Returns:
-        CameraFrame object
+        CameraFrame object (with position, target, up)
 
     Raises:
         ValueError: If data size is incorrect
@@ -160,6 +174,16 @@ def parse_camera_frame(data: bytes) -> CameraFrame:
     width, height, near, far, time_index, frame_id, _, client_ts, server_ts = \
         struct.unpack("<IIfffIIdd", data[100:144])
 
+    # Parse position, target, up (36 bytes total)
+    position_floats = struct.unpack("<3f", data[144:156])
+    position = np.array(position_floats, dtype=np.float32)
+
+    target_floats = struct.unpack("<3f", data[156:168])
+    target = np.array(target_floats, dtype=np.float32)
+
+    up_floats = struct.unpack("<3f", data[168:180])
+    up = np.array(up_floats, dtype=np.float32)
+
     # Reserved space (24 bytes) - ignored
 
     return CameraFrame(
@@ -169,6 +193,9 @@ def parse_camera_frame(data: bytes) -> CameraFrame:
         height=height,
         near=near,
         far=far,
+        position=position,
+        target=target,
+        up=up,
         time_index=time_index,
         frame_id=frame_id,
         client_timestamp=client_ts,
