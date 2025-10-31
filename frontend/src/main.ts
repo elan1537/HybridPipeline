@@ -985,21 +985,21 @@ initScene().then(async () => {
 
             // Example: Create a test sphere that falls and collides with Gaussian scene
             const testSphere = new THREE.Mesh(
-                new THREE.SphereGeometry(0.3, 32, 32),
+                new THREE.SphereGeometry(0.5, 32, 32),
                 new THREE.MeshStandardMaterial({
                     color: 0xff0000,
                     metalness: 0.5,
                     roughness: 0.5
                 })
             );
-            testSphere.position.set(0, 2, -3); // Start high above ground
+            testSphere.position.set(0, 0.3, -3.2); // Start high above ground
             testSphere.castShadow = true;
             localScene.add(testSphere);
 
             // Add to physics with gravity
             app.addPhysicsMesh(testSphere, {
                 velocity: new THREE.Vector3(0, 0, 0),
-                acceleration: new THREE.Vector3(0, -9.8, 0), // Gravity
+                acceleration: new THREE.Vector3(0, -0.05, 0), // Gravity
                 mass: 1.0,
                 restitution: 0.7, // 70% bounce
                 friction: 0.3     // 30% friction

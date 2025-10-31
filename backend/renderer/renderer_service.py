@@ -37,7 +37,7 @@ def camera_to_torch(camera: CameraFrame, device: str = "cuda") -> CameraFrame:
     Convert CameraFrame numpy arrays to torch tensors (if needed).
 
     Args:
-        camera: CameraFrame with numpy or torch arrays
+        camera: CameraFrame with numpy or torch arrays (Protocol v3)
         device: Target device for torch tensors
 
     Returns:
@@ -54,6 +54,9 @@ def camera_to_torch(camera: CameraFrame, device: str = "cuda") -> CameraFrame:
                 height=camera.height,
                 near=camera.near,
                 far=camera.far,
+                position=camera.position.to(device) if camera.position is not None else None,
+                target=camera.target.to(device) if camera.target is not None else None,
+                up=camera.up.to(device) if camera.up is not None else None,
                 time_index=camera.time_index,
                 frame_id=camera.frame_id,
                 client_timestamp=camera.client_timestamp,
@@ -61,7 +64,7 @@ def camera_to_torch(camera: CameraFrame, device: str = "cuda") -> CameraFrame:
             )
         return camera
 
-    # Convert numpy to torch
+    # Convert numpy to torch (Protocol v3: includes position, target, up)
     return CameraFrame(
         view_matrix=torch.from_numpy(camera.view_matrix).to(device),
         intrinsics=torch.from_numpy(camera.intrinsics).to(device),
@@ -69,6 +72,9 @@ def camera_to_torch(camera: CameraFrame, device: str = "cuda") -> CameraFrame:
         height=camera.height,
         near=camera.near,
         far=camera.far,
+        position=torch.from_numpy(camera.position).to(device) if camera.position is not None else None,
+        target=torch.from_numpy(camera.target).to(device) if camera.target is not None else None,
+        up=torch.from_numpy(camera.up).to(device) if camera.up is not None else None,
         time_index=camera.time_index,
         frame_id=camera.frame_id,
         client_timestamp=camera.client_timestamp,
@@ -264,48 +270,47 @@ class RendererService:
                         print(f"[CAMERA] Control message error: {e}")
                     continue
 
-                # Read remaining bytes for camera frame (168 - 8 = 160 bytes)
-                remaining = await self.camera_reader.read(160)
+                # Read remaining bytes for camera frame (204 - 8 = 196 bytes, Protocol v3)
+                remaining = await self.camera_reader.read(196)
 
-                if len(remaining) < 160:
-                    print(f"[CAMERA] Incomplete camera frame: {len(data) + len(remaining)} bytes")
+                if len(remaining) < 196:
+                    print(f"[CAMERA] Incomplete camera frame: {len(data) + len(remaining)} bytes (expected 204)")
                     continue
 
-                # Parse camera frame (full 168 bytes)
+                # Parse camera frame (full 204 bytes, Protocol v3)
                 full_data = data + remaining
                 camera = parse_camera_frame(full_data)
 
                 # Log camera data (every 60 frames for performance)
                 frame_count += 1
-                if frame_count % 60 == 0 or frame_count <= 3:
-                    # Extract camera position from view matrix (inverse translation)
-                    view_matrix = camera.view_matrix
-                    if isinstance(view_matrix, np.ndarray):
-                        # numpy array
-                        R = view_matrix[:3, :3]
-                        t = view_matrix[:3, 3]
-                        camera_pos = -R.T @ t
-                        view_str = f"[{view_matrix[0, 0]:.2f}, {view_matrix[0, 1]:.2f}, {view_matrix[0, 2]:.2f}, {view_matrix[0, 3]:.2f}]"
-                        intrinsics_str = f"[{camera.intrinsics[0, 0]:.1f}, {camera.intrinsics[0, 2]:.1f}, {camera.intrinsics[1, 1]:.1f}]"
-                    else:
-                        # torch tensor
-                        R = view_matrix[:3, :3]
-                        t = view_matrix[:3, 3]
-                        camera_pos = -R.T @ t
-                        view_str = f"[{view_matrix[0, 0].item():.2f}, {view_matrix[0, 1].item():.2f}, {view_matrix[0, 2].item():.2f}, {view_matrix[0, 3].item():.2f}]"
-                        intrinsics_str = f"[{camera.intrinsics[0, 0].item():.1f}, {camera.intrinsics[0, 2].item():.1f}, {camera.intrinsics[1, 1].item():.1f}]"
+                # if frame_count % 60 == 0 or frame_count <= 3:
+                #     # Extract camera position from view matrix
+                #     # NOTE: view_matrix is column-major from Three.js (translation in row 4)
+                #     # matrixWorld format: Camera → World (camera pose in world)
+                #     # Translation (column 3) directly gives camera position
+                #     view_matrix = camera.view_matrix
+                #     if isinstance(view_matrix, np.ndarray):
+                #         # numpy array - column 3 is camera position
+                #         camera_pos = view_matrix[:3, 3]
+                #         view_str = f"[{view_matrix[0, 0]:.2f}, {view_matrix[0, 1]:.2f}, {view_matrix[0, 2]:.2f}, {view_matrix[0, 3]:.2f}]"
+                #         intrinsics_str = f"[{camera.intrinsics[0, 0]:.1f}, {camera.intrinsics[0, 2]:.1f}, {camera.intrinsics[1, 1]:.1f}]"
+                #     else:
+                #         # torch tensor - column 3 is camera position
+                #         camera_pos = view_matrix[:3, 3]
+                #         view_str = f"[{view_matrix[0, 0].item():.2f}, {view_matrix[0, 1].item():.2f}, {view_matrix[0, 2].item():.2f}, {view_matrix[0, 3].item():.2f}]"
+                #         intrinsics_str = f"[{camera.intrinsics[0, 0].item():.1f}, {camera.intrinsics[0, 2].item():.1f}, {camera.intrinsics[1, 1].item():.1f}]"
 
-                    print(f"[CAMERA] Received frame {camera.frame_id}:")
-                    print(f"  Position: ({camera_pos[0]:.2f}, {camera_pos[1]:.2f}, {camera_pos[2]:.2f})")
-                    print(f"  View[0]: {view_str}")
-                    print(f"  Intrinsics (fx, cx, fy): {intrinsics_str}")
-                    print(f"  Resolution: {camera.width}x{camera.height}")
-                    if camera.client_timestamp is not None:
-                        print(f"  Client TS: {camera.client_timestamp:.2f} ms")
-                    if camera.server_timestamp is not None:
-                        print(f"  Server TS: {camera.server_timestamp:.2f} ms")
-                    if camera.time_index is not None:
-                        print(f"  Time Index: {camera.time_index:.3f}")
+                #     print(f"[CAMERA] Received frame {camera.frame_id}:")
+                #     print(f"  Position: ({camera_pos[0]:.2f}, {camera_pos[1]:.2f}, {camera_pos[2]:.2f})")
+                #     print(f"  View[0]: {view_str}")
+                #     print(f"  Intrinsics (fx, cx, fy): {intrinsics_str}")
+                #     print(f"  Resolution: {camera.width}x{camera.height}")
+                #     if camera.client_timestamp is not None:
+                #         print(f"  Client TS: {camera.client_timestamp:.2f} ms")
+                #     if camera.server_timestamp is not None:
+                #         print(f"  Server TS: {camera.server_timestamp:.2f} ms")
+                #     if camera.time_index is not None:
+                #         print(f"  Time Index: {camera.time_index:.3f}")
 
                 # Put in buffer
                 await self.frame_buffer.put(camera)
@@ -367,6 +372,7 @@ class RendererService:
                         server_timestamp=camera.server_timestamp
                     )
 
+                print(camera)
                 # Convert numpy to torch (if needed)
                 camera = camera_to_torch(camera, device="cuda")
 

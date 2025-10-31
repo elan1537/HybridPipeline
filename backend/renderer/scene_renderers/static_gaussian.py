@@ -146,12 +146,67 @@ class GsplatRenderer(BaseSceneRenderer):
 
         return means, quats, scales, opacities, shs
 
+    def _compute_w2c_from_lookat(
+        self,
+        cam_pos: torch.Tensor,
+        target: torch.Tensor,
+        up_vector: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute world-to-camera (w2c) transformation matrix using lookAt.
+
+        Note: Y-axis flip is handled in frontend (CameraController.ts).
+        Frontend sends Y-flipped coordinates to match backend coordinate system.
+
+        Args:
+            cam_pos: Camera position in world space (3,) tensor (Y-flipped from frontend)
+            target: Target position to look at (3,) tensor (Y-flipped from frontend)
+            up_vector: Up direction vector (3,) tensor
+
+        Returns:
+            4x4 world-to-camera transformation matrix on CUDA
+        """
+        # Ensure tensors are on CUDA
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        cam_pos = cam_pos.to(device).float()
+        target = target.to(device).float()
+        up_vector = up_vector.to(device).float()
+
+        # NOTE: Y-axis flip is now done in frontend (CameraController.ts)
+        # Frontend already sends Y-flipped coordinates to match backend coordinate system
+
+        # Compute camera basis vectors
+        # Forward vector (z-axis): from camera to target
+        forward = target - cam_pos
+        forward = forward / torch.norm(forward)
+
+        # Right vector (x-axis): up × forward
+        right = torch.cross(up_vector, forward)
+        right = right / torch.norm(right)
+
+        # Recompute up vector (y-axis): forward × right
+        up = torch.cross(forward, right)
+
+        # Build rotation matrix (world to camera)
+        # Note: This is the transpose of camera-to-world rotation
+        R_w2c = torch.stack([right, up, forward], dim=0)  # (3, 3)
+
+        # Translation vector (world origin in camera space)
+        t_w2c = -R_w2c @ cam_pos  # (3,)
+
+        # Build 4x4 transformation matrix
+        w2c_matrix = torch.eye(4, device=device, dtype=torch.float32)
+        w2c_matrix[:3, :3] = R_w2c
+        w2c_matrix[:3, 3] = t_w2c
+
+        return w2c_matrix
+
     async def render(self, camera: CameraFrame) -> RenderOutput:
         """
         Render the scene from the given camera.
 
         Args:
-            camera: Camera parameters
+            camera: Camera parameters (Protocol v3 with position, target, up)
 
         Returns:
             RenderOutput with color, depth, and alpha
@@ -165,14 +220,45 @@ class GsplatRenderer(BaseSceneRenderer):
         if rasterization is None:
             raise RuntimeError("gsplat library not available")
 
-        # Move camera matrices to GPU
-        viewmats = camera.view_matrix.to(self.device)
-        if viewmats.ndim == 2:
-            viewmats = viewmats.unsqueeze(0)  # (4, 4) -> (1, 4, 4)
+        # Extract camera parameters from CameraFrame
+        if camera.position is None or camera.target is None or camera.up is None:
+            raise ValueError("Camera position, target, and up vectors are required (Protocol v3)")
 
-        Ks = camera.intrinsics.to(self.device)
+        # Handle both numpy and torch tensors (camera_to_torch may have already converted)
+        if isinstance(camera.position, torch.Tensor):
+            cam_pos = camera.position.to(self.device)
+            target = camera.target.to(self.device)
+            up_vector = camera.up.to(self.device)
+        else:
+            cam_pos = torch.from_numpy(camera.position).to(self.device)
+            target = torch.from_numpy(camera.target).to(self.device)
+            up_vector = torch.from_numpy(camera.up).to(self.device)
+
+        # Compute w2c matrix using lookAt
+        w2c_matrix = self._compute_w2c_from_lookat(cam_pos, target, up_vector)
+        viewmats = w2c_matrix.unsqueeze(0)  # (4, 4) -> (1, 4, 4)
+
+        # Prepare intrinsics (handle both numpy and torch)
+        if isinstance(camera.intrinsics, torch.Tensor):
+            Ks = camera.intrinsics.to(self.device)
+        else:
+            Ks = torch.from_numpy(camera.intrinsics).to(self.device)
+
         if Ks.ndim == 2:
             Ks = Ks.unsqueeze(0)  # (3, 3) -> (1, 3, 3)
+
+        # Debug logging (first 3 frames or every 60 frames)
+        frame_id = camera.frame_id if camera.frame_id is not None else 0
+        if not hasattr(self, '_render_call_count'):
+            self._render_call_count = 0
+        self._render_call_count += 1
+
+        if self._render_call_count <= 3 or self._render_call_count % 60 == 0:
+            print(f"\n[GsplatRenderer] Frame {frame_id}")
+            print(f"  Camera position: {cam_pos.cpu().numpy()}")
+            print(f"  Camera target: {target.cpu().numpy()}")
+            print(f"  Camera up: {up_vector.cpu().numpy()}")
+            print(f"  w2c matrix:\n{viewmats[0].cpu().numpy()}")
 
         # Render using gsplat
         render_colors, render_alphas, _ = rasterization(

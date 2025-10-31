@@ -304,24 +304,27 @@ function updateCamera(data: CameraFrame) {
     debug.logWorker(`[updateCamera] Received timeIndex: ${data.timeIndex} (type: ${typeof data.timeIndex})`);
 
     /**
-     * Protocol v2: 224 bytes total
-     * Camera data: 192 bytes (48 floats)
+     * Protocol v3: 260 bytes total
+     * Camera data: 224 bytes (56 floats)
      *   - view_matrix: 16 floats (0-15)
      *   - projection_matrix: 16 floats (16-31)
      *   - intrinsics: 9 floats (32-40)
-     *   - reserved: 7 floats (41-47)
-     * Metadata: 32 bytes
-     *   - frame_id: 4 bytes (192-196)
-     *   - padding: 4 bytes (196-200)
-     *   - client_timestamp: 8 bytes (200-208)
-     *   - time_index: 4 bytes (208-212)
-     *   - padding: 12 bytes (212-224)
+     *   - position: 3 floats (41-43)
+     *   - target: 3 floats (44-46)
+     *   - up: 3 floats (47-49)
+     *   - reserved: 6 floats (50-55)
+     * Metadata: 36 bytes
+     *   - frame_id: 4 bytes (224-228)
+     *   - padding: 4 bytes (228-232)
+     *   - client_timestamp: 8 bytes (232-240)
+     *   - time_index: 4 bytes (240-244)
+     *   - padding: 16 bytes (244-260)
      */
 
-    const finalBuffer = new ArrayBuffer(224);
+    const finalBuffer = new ArrayBuffer(260);
 
-    // Camera data view (48 floats = 192 bytes)
-    const floatView = new Float32Array(finalBuffer, 0, 48);
+    // Camera data view (56 floats = 224 bytes)
+    const floatView = new Float32Array(finalBuffer, 0, 56);
 
     // 0-15: view_matrix (16 floats)
     floatView.set(data.view, 0);
@@ -332,12 +335,21 @@ function updateCamera(data: CameraFrame) {
     // 32-40: intrinsics (9 floats)
     floatView.set(data.intrinsics, 32);
 
-    // 41-47: reserved (7 floats) - automatically zero-initialized
+    // 41-43: position (3 floats)
+    floatView.set(data.position, 41);
+
+    // 44-46: target (3 floats)
+    floatView.set(data.target, 44);
+
+    // 47-49: up (3 floats)
+    floatView.set(data.up, 47);
+
+    // 50-55: reserved (6 floats) - automatically zero-initialized
 
     // Metadata views
-    const frameIdView = new Uint32Array(finalBuffer, 192, 1);
-    const timestampView = new Float64Array(finalBuffer, 200, 1);
-    const timeIndexView = new Float32Array(finalBuffer, 208, 1);
+    const frameIdView = new Uint32Array(finalBuffer, 224, 1);
+    const timestampView = new Float64Array(finalBuffer, 232, 1);
+    const timeIndexView = new Float32Array(finalBuffer, 240, 1);
 
     const timestamp = performance.timeOrigin + performance.now();
     const frameId = data.frameId || 0;
@@ -350,7 +362,7 @@ function updateCamera(data: CameraFrame) {
 
     // Log first few frames to verify sending
     if (frameId <= 3 || frameId % 60 === 0) {
-        console.log(`[Worker] Sent camera frame ${frameId} to server (224 bytes, protocol v2)`);
+        console.log(`[Worker] Sent camera frame ${frameId} to server (260 bytes, protocol v3)`);
     }
 }
 
