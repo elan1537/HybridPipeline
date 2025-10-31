@@ -1295,3 +1295,416 @@ if (applyColorSpace) {
 
 **작성일**: 2025-10-31
 **상태**: ✅ 해결 완료
+
+---
+
+# Encoder 모드 변경 시 Depth Map 업데이트 실패
+
+본 섹션은 H264 ↔ JPEG encoder 모드를 전환할 때 depth map이 업데이트되지 않는 문제를 다룹니다.
+
+**작성일**: 2025-10-31
+**상태**: ✅ 해결 완료
+
+---
+
+## 문제 1: TextureManager와 main.ts의 텍스처 관리 중복
+
+### 증상
+H264 모드에서 JPEG 모드로 전환 시 depth map이 업데이트되지 않음
+
+### 원인
+
+**텍스처 관리 로직이 분산됨:**
+
+1. **초기화 (main.ts:715-741)**
+   - main.ts에서 수동으로 각 material에 텍스처 할당
+   ```typescript
+   const newColorTexture = texManager.getColorTexture();
+   const newDepthTexture = texManager.getDepthTexture();
+
+   if (fusionMaterial) {
+       fusionMaterial.uniforms.wsColorSampler.value = newColorTexture;
+       fusionMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
+   }
+   // debugMaterial, depthFusionMaterial, gaussianOnlyMaterial...
+   ```
+
+2. **모드 변경 시 (TextureManager.ts:311-333)**
+   - TextureManager.setJpegMode()에서 새 depth texture 생성
+   - TextureManager.updateShaderMaterials()에서 자동 업데이트
+   ```typescript
+   setJpegMode(enabled: boolean): void {
+       this.depthTexture.dispose();
+       this.depthTexture = new THREE.DataTexture(...);
+       this.updateShaderMaterials();  // RenderingContext에서 material 찾아 업데이트
+   }
+   ```
+
+**일관성 없는 관리:**
+- 초기화는 main.ts가 직접 할당
+- 업데이트는 TextureManager가 자동 처리
+- Material 추가 시 두 곳 모두 수정 필요
+
+### 해결책
+
+**TextureManager가 완전히 텍스처 관리하도록 통일**
+
+**1. TextureManager.updateShaderMaterials() 확장**
+```typescript
+private updateShaderMaterials(): void {
+    // Material configuration: 어떤 material이 어떤 uniform을 필요로 하는지
+    const materialConfig = [
+        { name: 'fusion', uniforms: ['wsColorSampler', 'wsDepthSampler'] },
+        { name: 'debug', uniforms: ['wsColorSampler', 'wsDepthSampler'] },
+        { name: 'depthFusion', uniforms: ['wsColorSampler', 'wsDepthSampler'] },
+        { name: 'gaussianOnly', uniforms: ['wsColorSampler'] },
+    ];
+
+    materialConfig.forEach(config => {
+        const material = renderingContext.getMaterial(config.name);
+        if (material && 'uniforms' in material) {
+            config.uniforms.forEach(uniformName => {
+                if (uniformName === 'wsColorSampler') {
+                    material.uniforms[uniformName].value = this.colorTexture;
+                } else if (uniformName === 'wsDepthSampler') {
+                    material.uniforms[uniformName].value = this.depthTexture;
+                }
+            });
+        }
+    });
+}
+```
+
+**2. 초기화 메서드 추가**
+```typescript
+initializeShaderMaterials(): void {
+    console.log('[TextureManager] initializeShaderMaterials() called');
+    this.updateShaderMaterials();
+}
+```
+
+**3. main.ts 간소화 (50줄 → 6줄)**
+```typescript
+// 이전: 각 material마다 수동 할당
+if (fusionMaterial) {
+    fusionMaterial.uniforms.wsColorSampler.value = newColorTexture;
+    fusionMaterial.uniforms.wsDepthSampler.value = newDepthTexture;
+}
+// ... 반복
+
+// 이후: TextureManager에 위임
+texManager.initializeShaderMaterials();
+```
+
+### 개선 사항
+
+**단일 책임:**
+- TextureManager만 WebSocket 텍스처 관리
+- 초기화/모드 변경/해상도 변경 시 일관된 로직
+
+**유지보수성:**
+- Material 추가 시 materialConfig만 수정
+- 중복 코드 제거 (50줄 → 6줄)
+
+**동작 흐름:**
+```
+1. Backend에 encoder 변경 요청
+2. Worker의 decoder 모드 변경
+3. TextureManager.setJpegMode() 호출
+4. Depth texture 재생성 (Uint8Array → Uint16Array)
+5. updateShaderMaterials() 자동 호출
+6. 모든 shader material의 wsDepthSampler 업데이트
+7. JPEG 프레임 정상 렌더링 ✅
+```
+
+---
+
+## 문제 2: 레거시 wsColorTexture, wsDepthTexture 코드
+
+### 증상
+main.ts에 wsColorTexture, wsDepthTexture 관련 레거시 코드 산재
+
+### 원인
+
+**TextureManager 도입 전 레거시 코드:**
+
+1. **전역 변수 선언**
+   ```typescript
+   let wsColorTexture: THREE.Texture
+   let wsDepthTexture: THREE.DataTexture
+   ```
+
+2. **recreateDepthTexture() 함수**
+   ```typescript
+   function recreateDepthTexture(isJpegMode: boolean) {
+       wsDepthTexture.dispose();
+       wsDepthTexture = new THREE.DataTexture(...);
+       fusionMaterial.uniforms.wsDepthSampler.value = wsDepthTexture;
+       // ...
+   }
+   ```
+
+3. **worker.onmessage에서 직접 업데이트 (400+ 줄)**
+   ```typescript
+   if (data.type === 'frame') {
+       wsColorTexture.image = data.image;
+
+       if (data.depth instanceof Uint8Array) {
+           // H264 mode
+           wsDepthTexture.image.data = data.depth;
+       } else if (data.depth instanceof Uint16Array) {
+           // JPEG mode
+           wsDepthTexture.image.data = data.depth;
+       }
+       // ... 복잡한 해상도 검증 및 재생성 로직
+   }
+   ```
+
+### 해결책
+
+**모든 레거시 코드 제거**
+
+**1. 전역 변수 제거**
+```typescript
+// wsColorTexture removed - TextureManager manages this
+// wsDepthTexture removed - TextureManager manages this
+```
+
+**2. recreateDepthTexture() 함수 제거**
+```typescript
+// recreateDepthTexture() removed - TextureManager handles this
+```
+
+**3. worker.onmessage 간소화**
+```typescript
+// Legacy 'frame' message handling removed
+// All texture updates are managed by TextureManager.updateFromVideoFrame()
+if (data.type === 'frame' || data.type === 'video-frame') {
+    // 디코딩 완료 시점만 기록
+    if (data.frameId && data.decodeCompleteTime) {
+        latencyTracker.recordDecodeComplete(data.frameId);
+    }
+}
+```
+
+**4. Shader material 초기화 시 null 설정**
+```typescript
+debugMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+        wsColorSampler: { value: null }, // Will be set by TextureManager
+        wsDepthSampler: { value: null }, // Will be set by TextureManager
+    },
+    // ...
+});
+```
+
+**5. 기타 레거시 변수 제거**
+```typescript
+// workerReady removed - WebSocketSystem handles connection state
+// currentTimeIndex, frameCounter, isPlaying removed - Application.timeController
+// renderStart, renderCnt removed - LatencyTracker
+// updateCameraAspectRatio() removed - RenderingContext
+// updateSizeDisplays() removed - UISystem
+```
+
+### 최종 구조
+
+**TextureManager가 완전 관리:**
+- ✅ 텍스처 생성/재생성 (초기화, 모드 변경, 해상도 변경)
+- ✅ Shader material uniform 자동 업데이트
+- ✅ 프레임 데이터 업로드 (updateFromVideoFrame)
+
+**main.ts 역할:**
+- Material 생성 및 RenderingContext 등록만
+- 텍스처 관리는 완전히 TextureManager에 위임
+
+---
+
+## 관련 파일
+
+### Frontend
+- `frontend/src/systems/TextureManager.ts`: 완전한 텍스처 관리
+- `frontend/src/main.ts`: 레거시 코드 제거, 간소화
+
+---
+
+**작성일**: 2025-10-31
+**상태**: ✅ 해결 완료
+
+---
+
+# Encoder 변경 시 Renderer Crash 문제
+
+본 섹션은 H264 ↔ JPEG encoder 모드를 여러 번 전환하면 renderer가 crash하는 문제를 다룹니다.
+
+**작성일**: 2025-10-31
+**상태**: ✅ 해결 완료
+
+---
+
+## 문제: None frame으로 인한 AttributeError
+
+### 증상
+
+H264 ↔ JPEG 모드를 여러 번 반복하면 renderer service가 crash:
+
+```
+[CONTROL] Received encoder change command: H264
+[CONTROL] Frame buffer cleared
+[CONTROL] Current encoder shut down
+[CONTROL] GPU memory cache cleared
+[RENDER] Fatal error in render loop: 'NoneType' object has no attribute 'width'
+[RENDER] Render and send loop stopped
+```
+
+### 원인 분석
+
+**Race condition in LatestFrameBuffer:**
+
+1. **Encoder 변경 시 buffer.clear() 호출 (frame_buffer.py:108-113)**
+   ```python
+   def clear(self):
+       self.available.clear()
+       self.frame = None  # ← 프레임을 None으로 설정!
+   ```
+
+2. **get() 메서드가 None 반환 가능 (frame_buffer.py:92-100)**
+   ```python
+   async def get(self) -> T:
+       await self.available.wait()  # Event 대기
+
+       async with self.lock:
+           frame = self.frame  # ← None일 수 있음!
+           self.available.clear()
+
+       return frame  # ← None 반환!
+   ```
+
+3. **Render loop가 None 체크 없이 접근 (renderer_service.py:344-347)**
+   ```python
+   camera = await self.frame_buffer.get()  # ← None 반환 가능!
+
+   if camera.width <= 0:  # ← NoneType has no attribute 'width' 💥
+   ```
+
+**Race Condition 시나리오:**
+```
+Time    Thread 1 (Encoder Change)     Thread 2 (Render Loop)
+----    -------------------------     ----------------------
+t0      buffer.clear()
+        → self.frame = None
+        → self.available.clear()
+
+t1                                    camera = get()
+                                      await available.wait()
+
+t2      New frame arrives
+        buffer.put(new_frame)
+        → self.available.set()        ← available.wait() 깨어남!
+
+t3                                    frame = self.frame
+                                      ← frame = None! (아직 put 완료 전)
+
+t4                                    camera.width 접근
+                                      💥 AttributeError!
+```
+
+### 해결책
+
+**이중 방어 (Defense in Depth):**
+
+**1. LatestFrameBuffer.get() 개선 (frame_buffer.py:92-106)**
+```python
+async def get(self) -> T:
+    """Get latest frame (waits until a valid frame is available)."""
+    while True:
+        await self.available.wait()
+
+        async with self.lock:
+            frame = self.frame
+            # Only return if we have a valid frame
+            if frame is not None:
+                self.available.clear()
+                return frame
+
+            # Frame is None (just cleared), wait for next frame
+            self.available.clear()
+```
+
+**핵심 아이디어:**
+- None을 반환하지 않음
+- None이면 루프를 돌면서 유효한 프레임까지 대기
+- Race condition 원천 차단
+
+**2. Render loop에 방어 코드 추가 (renderer_service.py:346-349)**
+```python
+camera = await self.frame_buffer.get()
+
+# Skip None frames (만약을 대비한 이중 방어)
+if camera is None:
+    print("[RENDER] Received None camera frame (buffer cleared), waiting for next frame")
+    continue
+```
+
+### 동작 흐름 (해결 후)
+
+**Encoder 변경 시 안전한 흐름:**
+```
+1. [CONTROL] Encoder change command → JPEG
+2. [CONTROL] Frame buffer cleared → self.frame = None
+3. [RENDER] get() 호출 → while loop에서 대기
+4. [RENDER] frame = None 확인 → available.clear() 후 재대기
+5. [Frontend] 새 카메라 프레임 전송
+6. [BUFFER] put() → self.frame = new_frame, available.set()
+7. [RENDER] get() 깨어남 → frame is not None ✅ → 반환
+8. [RENDER] 정상 렌더링 재개 ✅
+```
+
+**여러 번 모드 전환해도:**
+- ✅ get()은 항상 유효한 프레임 반환
+- ✅ None frame으로 인한 crash 없음
+- ✅ 안정적인 encoder 변경
+
+### 개선 사항
+
+**안정성:**
+- Race condition 원천 차단
+- None 반환 불가능
+- Crash 완전 제거
+
+**성능:**
+- Overhead 최소 (None일 때만 재대기)
+- 정상 상황에서는 기존과 동일
+
+---
+
+## 관련 파일
+
+### Backend
+- `backend/renderer/utils/frame_buffer.py`: LatestFrameBuffer.get() 개선
+- `backend/renderer/renderer_service.py`: None 체크 방어 코드
+
+---
+
+## 교훈
+
+### 1. Race Condition은 Async 코드의 숙명
+- Event-driven 프로그래밍에서 항상 고려
+- Lock만으로는 불충분 (Event timing)
+
+### 2. Defense in Depth
+- 이중 방어: 원천 차단 + 방어 코드
+- "절대 일어나지 않을 것" → 방어 코드 필수
+
+### 3. None 처리의 중요성
+- Type hint만으로 부족
+- Runtime 검증 필수
+
+### 4. 테스트 시나리오
+- 정상 케이스만이 아닌 stress test
+- 반복 테스트 (여러 번 모드 전환)
+
+---
+
+**작성일**: 2025-10-31
+**상태**: ✅ 해결 완료
