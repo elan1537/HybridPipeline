@@ -343,6 +343,11 @@ class RendererService:
                 # Get camera from buffer
                 camera = await self.frame_buffer.get()
 
+                # Skip None frames (can happen after buffer clear during encoder change)
+                if camera is None:
+                    print("[RENDER] Received None camera frame (buffer cleared), waiting for next frame")
+                    continue
+
                 # Validate camera data (손상된 데이터 필터링)
                 if camera.width <= 0 or camera.width > 8192:
                     print(f"[RENDER] Invalid width {camera.width}, skipping frame {camera.frame_id}")

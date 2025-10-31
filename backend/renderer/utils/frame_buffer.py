@@ -90,14 +90,20 @@ class LatestFrameBuffer(FrameBuffer[T]):
             self.available.set()
 
     async def get(self) -> T:
-        """Get latest frame."""
-        await self.available.wait()
+        """Get latest frame (waits until a valid frame is available)."""
+        while True:
+            await self.available.wait()
 
-        async with self.lock:
-            frame = self.frame
-            self.available.clear()
+            async with self.lock:
+                frame = self.frame
+                # Only clear and return if we have a valid frame
+                # This prevents returning None after buffer clear
+                if frame is not None:
+                    self.available.clear()
+                    return frame
 
-        return frame
+                # Frame is None (just cleared), wait for next frame
+                self.available.clear()
 
     def clear(self):
         """Clear buffered frame."""
