@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons';
 import { debug } from '../../debug-logger';
 import { CameraStateManager } from '../managers/CameraStateManager';
+import { BasePanel } from './BasePanel';
 
 export interface DebugPanelCallbacks {
   onConsoleDebugToggle?: (enabled: boolean) => void;
@@ -15,7 +16,7 @@ export interface DebugPanelCallbacks {
   onLoadCamera?: () => void;
 }
 
-export class DebugPanel {
+export class DebugPanel extends BasePanel {
   // DOM elements - Debug checkboxes
   private consoleDebugCheckbox: HTMLInputElement | null = null;
   private cameraDebugCheckbox: HTMLInputElement | null = null;
@@ -43,6 +44,7 @@ export class DebugPanel {
   private callbacks: DebugPanelCallbacks = {};
 
   constructor(callbacks: DebugPanelCallbacks = {}) {
+    super();
     this.callbacks = callbacks;
     this.initializeElements();
     this.setupListeners();
@@ -50,50 +52,56 @@ export class DebugPanel {
 
   private initializeElements(): void {
     // Debug checkboxes
-    this.consoleDebugCheckbox = document.getElementById('console-debug-checkbox') as HTMLInputElement;
-    this.cameraDebugCheckbox = document.getElementById('camera-debug-checkbox') as HTMLInputElement;
+    this.consoleDebugCheckbox = this.getElement('console-debug-checkbox');
+    this.cameraDebugCheckbox = this.getElement('camera-debug-checkbox');
 
     // Camera info
-    this.cameraInfoSection = document.getElementById('camera-info-section') as HTMLDivElement;
-    this.cameraPositionDiv = document.getElementById('camera-position') as HTMLDivElement;
-    this.cameraTargetDiv = document.getElementById('camera-target') as HTMLDivElement;
-    this.saveCameraButton = document.getElementById('save-camera-button') as HTMLInputElement;
-    this.loadCameraButton = document.getElementById('load-camera-button') as HTMLInputElement;
+    this.cameraInfoSection = this.getElement('camera-info-section');
+    this.cameraPositionDiv = this.getElement('camera-position');
+    this.cameraTargetDiv = this.getElement('camera-target');
+    this.saveCameraButton = this.getElement('save-camera-button');
+    this.loadCameraButton = this.getElement('load-camera-button');
 
     // Manual camera control
-    this.cameraPosXInput = document.getElementById('camera-pos-x') as HTMLInputElement;
-    this.cameraPosYInput = document.getElementById('camera-pos-y') as HTMLInputElement;
-    this.cameraPosZInput = document.getElementById('camera-pos-z') as HTMLInputElement;
-    this.cameraTarXInput = document.getElementById('camera-tar-x') as HTMLInputElement;
-    this.cameraTarYInput = document.getElementById('camera-tar-y') as HTMLInputElement;
-    this.cameraTarZInput = document.getElementById('camera-tar-z') as HTMLInputElement;
-    this.applyCameraButton = document.getElementById('apply-camera-button') as HTMLInputElement;
+    this.cameraPosXInput = this.getElement('camera-pos-x');
+    this.cameraPosYInput = this.getElement('camera-pos-y');
+    this.cameraPosZInput = this.getElement('camera-pos-z');
+    this.cameraTarXInput = this.getElement('camera-tar-x');
+    this.cameraTarYInput = this.getElement('camera-tar-y');
+    this.cameraTarZInput = this.getElement('camera-tar-z');
+    this.applyCameraButton = this.getElement('apply-camera-button');
   }
 
   private setupListeners(): void {
     // Debug checkboxes
-    this.consoleDebugCheckbox?.addEventListener('change', () => this.handleConsoleDebugToggle());
-    this.cameraDebugCheckbox?.addEventListener('change', () => this.handleCameraDebugToggle());
+    this.addListener(this.consoleDebugCheckbox, 'change', () => this.handleConsoleDebugToggle());
+    this.addListener(this.cameraDebugCheckbox, 'change', () => this.handleCameraDebugToggle());
 
     // Camera save/load
-    this.saveCameraButton?.addEventListener('click', () => this.handleSaveCamera());
-    this.loadCameraButton?.addEventListener('click', () => this.handleLoadCamera());
+    this.addListener(this.saveCameraButton, 'click', () => this.handleSaveCamera());
+    this.addListener(this.loadCameraButton, 'click', () => this.handleLoadCamera());
 
     // Manual camera control
-    this.applyCameraButton?.addEventListener('click', () => this.applyCameraFromInputs());
+    this.addListener(this.applyCameraButton, 'click', () => this.applyCameraFromInputs());
 
-    // Auto-apply after delay
-    [this.cameraPosXInput, this.cameraPosYInput, this.cameraPosZInput,
-     this.cameraTarXInput, this.cameraTarYInput, this.cameraTarZInput].forEach(input => {
-      input?.addEventListener('input', () => {
-        clearTimeout((input as any)._timeout);
-        (input as any)._timeout = setTimeout(() => this.applyCameraFromInputs(), 500);
+    // Camera input fields - auto-apply after delay
+    const cameraInputs = [
+      this.cameraPosXInput, this.cameraPosYInput, this.cameraPosZInput,
+      this.cameraTarXInput, this.cameraTarYInput, this.cameraTarZInput
+    ];
+
+    cameraInputs.forEach(input => {
+      this.addListener(input, 'input', () => {
+        clearTimeout((input as any)?._timeout);
+        if (input) {
+          (input as any)._timeout = setTimeout(() => this.applyCameraFromInputs(), 500);
+        }
       });
 
       // Apply immediately on Enter
-      input?.addEventListener('keydown', (event) => {
+      this.addListener(input, 'keydown', (event) => {
         if (event.key === 'Enter') {
-          clearTimeout((input as any)._timeout);
+          clearTimeout((input as any)?._timeout);
           this.applyCameraFromInputs();
         }
       });
@@ -102,14 +110,14 @@ export class DebugPanel {
 
   // Event handlers
   private handleConsoleDebugToggle(): void {
-    const isEnabled = this.consoleDebugCheckbox?.checked ?? false;
+    const isEnabled = this.isChecked(this.consoleDebugCheckbox);
     debug.setDebugEnabled(isEnabled);
     debug.logMain(`Console debug logging ${isEnabled ? 'enabled' : 'disabled'}`);
     this.callbacks.onConsoleDebugToggle?.(isEnabled);
   }
 
   private handleCameraDebugToggle(): void {
-    const isEnabled = this.cameraDebugCheckbox?.checked ?? false;
+    const isEnabled = this.isChecked(this.cameraDebugCheckbox);
     this.callbacks.onCameraDebugToggle?.(isEnabled);
   }
 
@@ -134,12 +142,12 @@ export class DebugPanel {
   private applyCameraFromInputs(): void {
     if (!this.camera || !this.controls) return;
 
-    const posX = parseFloat(this.cameraPosXInput?.value ?? '0') || 0;
-    const posY = parseFloat(this.cameraPosYInput?.value ?? '0') || 0;
-    const posZ = parseFloat(this.cameraPosZInput?.value ?? '0') || 0;
-    const tarX = parseFloat(this.cameraTarXInput?.value ?? '0') || 0;
-    const tarY = parseFloat(this.cameraTarYInput?.value ?? '0') || 0;
-    const tarZ = parseFloat(this.cameraTarZInput?.value ?? '0') || 0;
+    const posX = parseFloat(this.getValue(this.cameraPosXInput, '0')) || 0;
+    const posY = parseFloat(this.getValue(this.cameraPosYInput, '0')) || 0;
+    const posZ = parseFloat(this.getValue(this.cameraPosZInput, '0')) || 0;
+    const tarX = parseFloat(this.getValue(this.cameraTarXInput, '0')) || 0;
+    const tarY = parseFloat(this.getValue(this.cameraTarYInput, '0')) || 0;
+    const tarZ = parseFloat(this.getValue(this.cameraTarZInput, '0')) || 0;
 
     this.camera.position.set(posX, posY, posZ);
     this.controls.target.set(tarX, tarY, tarZ);
@@ -155,38 +163,40 @@ export class DebugPanel {
   }
 
   updateCameraInfo(): void {
-    if (!this.cameraDebugCheckbox?.checked) return;
+    if (!this.isChecked(this.cameraDebugCheckbox)) return;
     if (!this.camera || !this.controls) return;
 
     const position = this.camera.position;
     const target = this.controls.target;
 
-    if (this.cameraPositionDiv) {
-      this.cameraPositionDiv.textContent = `Position: (${position.x.toFixed(3)}, ${position.y.toFixed(3)}, ${position.z.toFixed(3)})`;
-    }
+    this.updateText(
+      this.cameraPositionDiv,
+      `Position: (${position.x.toFixed(3)}, ${position.y.toFixed(3)}, ${position.z.toFixed(3)})`
+    );
 
-    if (this.cameraTargetDiv) {
-      this.cameraTargetDiv.textContent = `Target: (${target.x.toFixed(3)}, ${target.y.toFixed(3)}, ${target.z.toFixed(3)})`;
-    }
+    this.updateText(
+      this.cameraTargetDiv,
+      `Target: (${target.x.toFixed(3)}, ${target.y.toFixed(3)}, ${target.z.toFixed(3)})`
+    );
 
     // Update input fields
     this.updateCameraInputFields();
   }
 
   private updateCameraInputFields(): void {
-    if (!this.cameraDebugCheckbox?.checked) return;
+    if (!this.isChecked(this.cameraDebugCheckbox)) return;
     if (!this.camera || !this.controls) return;
 
-    if (this.cameraPosXInput) this.cameraPosXInput.value = this.camera.position.x.toFixed(3);
-    if (this.cameraPosYInput) this.cameraPosYInput.value = this.camera.position.y.toFixed(3);
-    if (this.cameraPosZInput) this.cameraPosZInput.value = this.camera.position.z.toFixed(3);
-    if (this.cameraTarXInput) this.cameraTarXInput.value = this.controls.target.x.toFixed(3);
-    if (this.cameraTarYInput) this.cameraTarYInput.value = this.controls.target.y.toFixed(3);
-    if (this.cameraTarZInput) this.cameraTarZInput.value = this.controls.target.z.toFixed(3);
+    this.setValue(this.cameraPosXInput, this.camera.position.x.toFixed(3));
+    this.setValue(this.cameraPosYInput, this.camera.position.y.toFixed(3));
+    this.setValue(this.cameraPosZInput, this.camera.position.z.toFixed(3));
+    this.setValue(this.cameraTarXInput, this.controls.target.x.toFixed(3));
+    this.setValue(this.cameraTarYInput, this.controls.target.y.toFixed(3));
+    this.setValue(this.cameraTarZInput, this.controls.target.z.toFixed(3));
   }
 
   isCameraDebugEnabled(): boolean {
-    return this.cameraDebugCheckbox?.checked ?? false;
+    return this.isChecked(this.cameraDebugCheckbox);
   }
 
   cleanup(): void {

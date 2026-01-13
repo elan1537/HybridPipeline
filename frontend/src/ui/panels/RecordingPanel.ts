@@ -5,8 +5,9 @@
 
 import { debug } from '../../debug-logger';
 import { RenderMode } from '../../types';
+import { BasePanel } from './BasePanel';
 
-export class RecordingPanel {
+export class RecordingPanel extends BasePanel {
   // DOM elements
   private recordingButton: HTMLInputElement | null = null;
   private recordingStatus: HTMLDivElement | null = null;
@@ -28,36 +29,33 @@ export class RecordingPanel {
   private currentRenderMode: RenderMode = RenderMode.FUSION;
 
   constructor() {
+    super();
     this.initializeElements();
     this.setupListeners();
     this.checkSupport();
   }
 
   private initializeElements(): void {
-    this.recordingButton = document.getElementById('recording-button') as HTMLInputElement;
-    this.recordingStatus = document.getElementById('recording-status') as HTMLDivElement;
-    this.recordingTime = document.getElementById('recording-time') as HTMLDivElement;
-    this.recordingMode = document.getElementById('recording-mode') as HTMLDivElement;
-    this.recordingSize = document.getElementById('recording-size') as HTMLDivElement;
-    this.recordingDownload = document.getElementById('recording-download') as HTMLInputElement;
-    this.recordingCompatibility = document.getElementById('recording-compatibility') as HTMLDivElement;
+    this.recordingButton = this.getElement('recording-button');
+    this.recordingStatus = this.getElement('recording-status');
+    this.recordingTime = this.getElement('recording-time');
+    this.recordingMode = this.getElement('recording-mode');
+    this.recordingSize = this.getElement('recording-size');
+    this.recordingDownload = this.getElement('recording-download');
+    this.recordingCompatibility = this.getElement('recording-compatibility');
   }
 
   private setupListeners(): void {
-    this.recordingButton?.addEventListener('click', () => this.handleRecordingToggle());
-    this.recordingDownload?.addEventListener('click', () => this.downloadRecording());
+    this.addListener(this.recordingButton, 'click', () => this.handleRecordingToggle());
+    this.addListener(this.recordingDownload, 'click', () => this.downloadRecording());
   }
 
   private checkSupport(): void {
     this.isRecordingSupported = !!(window.MediaRecorder && HTMLCanvasElement.prototype.captureStream);
 
     if (!this.isRecordingSupported) {
-      if (this.recordingCompatibility) {
-        this.recordingCompatibility.style.display = 'block';
-      }
-      if (this.recordingButton) {
-        this.recordingButton.disabled = true;
-      }
+      this.setVisible(this.recordingCompatibility, true);
+      this.setDisabled(this.recordingButton, true);
       debug.warn('[RecordingPanel] Screen recording not supported in this browser');
     } else {
       debug.logMain('[RecordingPanel] Screen recording is supported');
@@ -66,10 +64,8 @@ export class RecordingPanel {
 
   private handleRecordingToggle(): void {
     if (!this.isRecordingSupported) {
-      if (this.recordingCompatibility) {
-        this.recordingCompatibility.style.display = 'block';
-        this.recordingCompatibility.textContent = 'Screen recording not supported in this browser';
-      }
+      this.setVisible(this.recordingCompatibility, true);
+      this.updateText(this.recordingCompatibility, 'Screen recording not supported in this browser');
       return;
     }
 
@@ -130,10 +126,8 @@ export class RecordingPanel {
         debug.logMain(`[RecordingPanel] Final video blob size: ${this.recordingBlob.size} bytes`);
 
         // 다운로드 버튼 활성화
-        if (this.recordingDownload) {
-          this.recordingDownload.style.display = 'block';
-          this.recordingDownload.value = `Download Recording (${(this.recordingBlob.size / 1024 / 1024).toFixed(1)}MB)`;
-        }
+        this.setVisible(this.recordingDownload, true);
+        this.setValue(this.recordingDownload, `Download Recording (${(this.recordingBlob.size / 1024 / 1024).toFixed(1)}MB)`);
       };
 
       this.mediaRecorder.onerror = (event) => {
@@ -165,18 +159,14 @@ export class RecordingPanel {
       this.mediaRecorder!.start(1000); // 1초마다 데이터 청크 생성
 
       // UI 업데이트
-      if (this.recordingButton) this.recordingButton.value = 'Stop Recording';
-      if (this.recordingStatus) {
-        this.recordingStatus.style.display = 'block';
-        this.recordingStatus.textContent = 'Status: Recording...';
-      }
-      if (this.recordingTime) this.recordingTime.style.display = 'block';
-      if (this.recordingMode) {
-        this.recordingMode.style.display = 'block';
-        this.recordingMode.textContent = `Mode: ${this.currentRenderMode}`;
-      }
-      if (this.recordingSize) this.recordingSize.style.display = 'block';
-      if (this.recordingDownload) this.recordingDownload.style.display = 'none';
+      this.setValue(this.recordingButton, 'Stop Recording');
+      this.setVisible(this.recordingStatus, true);
+      this.updateText(this.recordingStatus, 'Status: Recording...');
+      this.setVisible(this.recordingTime, true);
+      this.setVisible(this.recordingMode, true);
+      this.updateText(this.recordingMode, `Mode: ${this.currentRenderMode}`);
+      this.setVisible(this.recordingSize, true);
+      this.setVisible(this.recordingDownload, false);
 
       // 타이머 시작
       this.recordingTimer = window.setInterval(() => this.updateRecordingUI(), 100);
@@ -185,9 +175,7 @@ export class RecordingPanel {
 
     } catch (error) {
       debug.error('[RecordingPanel] Failed to start recording:', error);
-      if (this.recordingStatus) {
-        this.recordingStatus.textContent = 'Status: Failed to start recording';
-      }
+      this.updateText(this.recordingStatus, 'Status: Failed to start recording');
     }
   }
 
@@ -210,8 +198,8 @@ export class RecordingPanel {
       }
 
       // UI 업데이트
-      if (this.recordingButton) this.recordingButton.value = 'Start Recording';
-      if (this.recordingStatus) this.recordingStatus.textContent = 'Status: Stopped';
+      this.setValue(this.recordingButton, 'Start Recording');
+      this.updateText(this.recordingStatus, 'Status: Stopped');
 
       debug.logMain('[RecordingPanel] Recording stopped successfully');
 
@@ -227,14 +215,12 @@ export class RecordingPanel {
       const minutes = Math.floor(elapsedSeconds / 60);
       const seconds = elapsedSeconds % 60;
 
-      if (this.recordingTime) {
-        this.recordingTime.textContent = `Duration: ${minutes}:${seconds.toString().padStart(2, '0')}`;
-      }
+      this.updateText(this.recordingTime, `Duration: ${minutes}:${seconds.toString().padStart(2, '0')}`);
 
       // 현재까지 녹화된 데이터 크기 표시
-      if (this.recordedChunks.length > 0 && this.recordingSize) {
+      if (this.recordedChunks.length > 0) {
         const totalSize = this.recordedChunks.reduce((total, chunk) => total + chunk.size, 0);
-        this.recordingSize.textContent = `Size: ${(totalSize / 1024 / 1024).toFixed(1)}MB`;
+        this.updateText(this.recordingSize, `Size: ${(totalSize / 1024 / 1024).toFixed(1)}MB`);
       }
     }
   }

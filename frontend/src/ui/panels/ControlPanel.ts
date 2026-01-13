@@ -5,6 +5,7 @@
 
 import { debug } from '../../debug-logger';
 import { RenderMode } from '../../types';
+import { BasePanel } from './BasePanel';
 
 // Callbacks for handling UI events
 export interface ControlPanelCallbacks {
@@ -15,7 +16,13 @@ export interface ControlPanelCallbacks {
   onRenderModeChange?: (mode: RenderMode) => void;
 }
 
-export class ControlPanel {
+// Render mode radio button configuration
+interface RenderModeConfig {
+  id: string;
+  mode: RenderMode;
+}
+
+export class ControlPanel extends BasePanel {
   // DOM elements - Connection controls
   private wsConnectButton: HTMLInputElement | null = null;
   private wsDisconnectButton: HTMLInputElement | null = null;
@@ -24,12 +31,8 @@ export class ControlPanel {
   // DOM elements - Encoder control
   private jpegFallbackCheckbox: HTMLInputElement | null = null;
 
-  // DOM elements - Render mode controls
-  private fusionModeRadio: HTMLInputElement | null = null;
-  private gaussianOnlyModeRadio: HTMLInputElement | null = null;
-  private localOnlyModeRadio: HTMLInputElement | null = null;
-  private depthFusionModeRadio: HTMLInputElement | null = null;
-  private feedForwardModeRadio: HTMLInputElement | null = null;
+  // DOM elements - Render mode controls (stored as map for easy access)
+  private renderModeRadios: Map<RenderMode, HTMLInputElement | null> = new Map();
 
   // DOM elements - Debug controls
   private depthDebugCheckbox: HTMLInputElement | null = null;
@@ -38,7 +41,17 @@ export class ControlPanel {
   private currentRenderMode: RenderMode = RenderMode.FUSION;
   private callbacks: ControlPanelCallbacks = {};
 
+  // Render mode configuration
+  private static readonly RENDER_MODES: RenderModeConfig[] = [
+    { id: 'fusion-mode', mode: RenderMode.FUSION },
+    { id: 'gaussian-only-mode', mode: RenderMode.GAUSSIAN_ONLY },
+    { id: 'local-only-mode', mode: RenderMode.LOCAL_ONLY },
+    { id: 'depth-fusion-mode', mode: RenderMode.DEPTH_FUSION },
+    { id: 'feed-forward-mode', mode: RenderMode.FEED_FORWARD },
+  ];
+
   constructor(callbacks: ControlPanelCallbacks = {}) {
+    super();
     this.callbacks = callbacks;
     this.initializeElements();
     this.setupListeners();
@@ -46,22 +59,20 @@ export class ControlPanel {
 
   private initializeElements(): void {
     // Connection controls
-    this.wsConnectButton = document.getElementById('ws-connect-button') as HTMLInputElement;
-    this.wsDisconnectButton = document.getElementById('ws-disconnect-button') as HTMLInputElement;
-    this.wsStateConsoleText = document.getElementById('ws-state-console-text') as HTMLDivElement;
+    this.wsConnectButton = this.getElement('ws-connect-button');
+    this.wsDisconnectButton = this.getElement('ws-disconnect-button');
+    this.wsStateConsoleText = this.getElement('ws-state-console-text');
 
     // Encoder control
-    this.jpegFallbackCheckbox = document.getElementById('jpeg-fallback-checkbox') as HTMLInputElement;
+    this.jpegFallbackCheckbox = this.getElement('jpeg-fallback-checkbox');
 
-    // Render mode controls
-    this.fusionModeRadio = document.getElementById('fusion-mode') as HTMLInputElement;
-    this.gaussianOnlyModeRadio = document.getElementById('gaussian-only-mode') as HTMLInputElement;
-    this.localOnlyModeRadio = document.getElementById('local-only-mode') as HTMLInputElement;
-    this.depthFusionModeRadio = document.getElementById('depth-fusion-mode') as HTMLInputElement;
-    this.feedForwardModeRadio = document.getElementById('feed-forward-mode') as HTMLInputElement;
+    // Render mode controls - initialize using configuration
+    ControlPanel.RENDER_MODES.forEach(config => {
+      this.renderModeRadios.set(config.mode, this.getElement(config.id));
+    });
 
     // Debug controls
-    this.depthDebugCheckbox = document.getElementById('depth-debug-checkbox') as HTMLInputElement;
+    this.depthDebugCheckbox = this.getElement('depth-debug-checkbox');
 
     if (!this.wsConnectButton || !this.wsDisconnectButton) {
       debug.warn('[ControlPanel] Connection buttons not found');
@@ -70,44 +81,23 @@ export class ControlPanel {
 
   private setupListeners(): void {
     // Connection buttons
-    this.wsConnectButton?.addEventListener('click', () => this.handleConnect());
-    this.wsDisconnectButton?.addEventListener('click', () => this.handleDisconnect());
+    this.addListener(this.wsConnectButton, 'click', () => this.handleConnect());
+    this.addListener(this.wsDisconnectButton, 'click', () => this.handleDisconnect());
 
     // Encoder toggle
-    this.jpegFallbackCheckbox?.addEventListener('click', () => this.handleEncoderChange());
+    this.addListener(this.jpegFallbackCheckbox, 'click', () => this.handleEncoderChange());
 
     // Depth debug toggle
-    this.depthDebugCheckbox?.addEventListener('click', () => this.handleDepthDebugToggle());
+    this.addListener(this.depthDebugCheckbox, 'click', () => this.handleDepthDebugToggle());
 
-    // Render mode radios
-    this.fusionModeRadio?.addEventListener('change', () => {
-      if (this.fusionModeRadio?.checked) {
-        this.handleRenderModeChange(RenderMode.FUSION);
-      }
-    });
-
-    this.gaussianOnlyModeRadio?.addEventListener('change', () => {
-      if (this.gaussianOnlyModeRadio?.checked) {
-        this.handleRenderModeChange(RenderMode.GAUSSIAN_ONLY);
-      }
-    });
-
-    this.localOnlyModeRadio?.addEventListener('change', () => {
-      if (this.localOnlyModeRadio?.checked) {
-        this.handleRenderModeChange(RenderMode.LOCAL_ONLY);
-      }
-    });
-
-    this.depthFusionModeRadio?.addEventListener('change', () => {
-      if (this.depthFusionModeRadio?.checked) {
-        this.handleRenderModeChange(RenderMode.DEPTH_FUSION);
-      }
-    });
-
-    this.feedForwardModeRadio?.addEventListener('change', () => {
-      if (this.feedForwardModeRadio?.checked) {
-        this.handleRenderModeChange(RenderMode.FEED_FORWARD);
-      }
+    // Render mode radios - setup using configuration (loop-based)
+    ControlPanel.RENDER_MODES.forEach(config => {
+      const radio = this.renderModeRadios.get(config.mode);
+      this.addListener(radio, 'change', () => {
+        if (this.isChecked(radio)) {
+          this.handleRenderModeChange(config.mode);
+        }
+      });
     });
   }
 
@@ -123,13 +113,13 @@ export class ControlPanel {
   }
 
   private handleEncoderChange(): void {
-    const isJpegMode = this.jpegFallbackCheckbox?.checked ?? false;
+    const isJpegMode = this.isChecked(this.jpegFallbackCheckbox);
     debug.logMain(`[ControlPanel] Encoder changed to ${isJpegMode ? 'JPEG' : 'H264'} mode`);
     this.callbacks.onEncoderChange?.(isJpegMode);
   }
 
   private handleDepthDebugToggle(): void {
-    const isEnabled = this.depthDebugCheckbox?.checked ?? false;
+    const isEnabled = this.isChecked(this.depthDebugCheckbox);
     debug.logMain(`[ControlPanel] Depth Debug: ${isEnabled ? 'Enabled' : 'Disabled'}`);
     this.callbacks.onDepthDebugToggle?.(isEnabled);
   }
@@ -142,8 +132,6 @@ export class ControlPanel {
 
   // Public methods
   setConnectionState(state: 'connected' | 'disconnected' | 'error' | 'closed'): void {
-    if (!this.wsStateConsoleText) return;
-
     const stateMap = {
       connected: 'WS State: Connected',
       disconnected: 'WS State: Disconnected',
@@ -151,7 +139,7 @@ export class ControlPanel {
       closed: 'WS State: Closed'
     };
 
-    this.wsStateConsoleText.textContent = stateMap[state];
+    this.updateText(this.wsStateConsoleText, stateMap[state]);
   }
 
   getRenderMode(): RenderMode {
@@ -161,26 +149,23 @@ export class ControlPanel {
   setRenderMode(mode: RenderMode): void {
     this.currentRenderMode = mode;
 
-    // Update radio buttons
-    if (this.fusionModeRadio) this.fusionModeRadio.checked = (mode === RenderMode.FUSION);
-    if (this.gaussianOnlyModeRadio) this.gaussianOnlyModeRadio.checked = (mode === RenderMode.GAUSSIAN_ONLY);
-    if (this.localOnlyModeRadio) this.localOnlyModeRadio.checked = (mode === RenderMode.LOCAL_ONLY);
-    if (this.depthFusionModeRadio) this.depthFusionModeRadio.checked = (mode === RenderMode.DEPTH_FUSION);
-    if (this.feedForwardModeRadio) this.feedForwardModeRadio.checked = (mode === RenderMode.FEED_FORWARD);
+    // Update radio buttons using configuration
+    ControlPanel.RENDER_MODES.forEach(config => {
+      const radio = this.renderModeRadios.get(config.mode);
+      this.setChecked(radio, config.mode === mode);
+    });
   }
 
   isJpegMode(): boolean {
-    return this.jpegFallbackCheckbox?.checked ?? false;
+    return this.isChecked(this.jpegFallbackCheckbox);
   }
 
   setJpegMode(enabled: boolean): void {
-    if (this.jpegFallbackCheckbox) {
-      this.jpegFallbackCheckbox.checked = enabled;
-    }
+    this.setChecked(this.jpegFallbackCheckbox, enabled);
   }
 
   isDepthDebugEnabled(): boolean {
-    return this.depthDebugCheckbox?.checked ?? false;
+    return this.isChecked(this.depthDebugCheckbox);
   }
 
   setCallbacks(callbacks: ControlPanelCallbacks): void {
