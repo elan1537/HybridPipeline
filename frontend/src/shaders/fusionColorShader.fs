@@ -28,7 +28,7 @@ void main() {
     vec4 localColor = texture2D(localColorSampler, localUv);
     float localDepth = texture2D(localDepthSampler, localUv).r;
 
-    float d_8bit = floor(localDepth * 255.0 + 0.5) / 255.0;
+    float d_8bit = floor(localDepth * 255.0) / 255.0;
 
     vec4 wsColor = texture2D(wsColorSampler, wsUv);
     float wsDepth = texture2D(wsDepthSampler, wsUv).r;

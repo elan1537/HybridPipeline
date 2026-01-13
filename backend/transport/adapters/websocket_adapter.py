@@ -4,7 +4,7 @@ WebSocket Adapter for Frontend communication.
 Handles WebSocket connections from Frontend clients (browser, app, etc.)
 
 Protocol:
-- Camera: Frontend → Transport (160 bytes)
+- Camera: Frontend → Transport (260 bytes, Protocol v3)
 - Video: Transport → Frontend (44/48 bytes header + data)
 - Handshake: 4 bytes (width, height)
 - Ping/Pong: 16 bytes
@@ -36,7 +36,7 @@ class WebSocketAdapter(BaseFrontendAdapter):
 
     Responsibilities:
     - Accept WebSocket connections from Frontend
-    - Receive camera data (160 bytes)
+    - Receive camera data (260 bytes, Protocol v3)
     - Send video data (44/48 bytes header + data)
     - Handle handshake and ping/pong
     """
@@ -179,11 +179,35 @@ class WebSocketAdapter(BaseFrontendAdapter):
                         self.height = height
                     continue
 
-                # Camera data (160 bytes)
-                elif len(raw) == 160:
+                # Control message (8 or 12 bytes)
+                elif len(raw) == 8 or len(raw) == 12:
+                    # Control message for Renderer (e.g., encoder change)
+                    # Just forward to camera_queue with special marker
+                    print(f"[WebSocket] Received control message ({len(raw)} bytes)")
+
+                    # Create a special "control" camera frame with control data
+                    # Use a marker in frame_id to indicate control message
+                    control_frame = type('ControlFrame', (), {
+                        'is_control': True,
+                        'control_data': raw
+                    })()
+
+                    try:
+                        self.camera_queue.put_nowait(control_frame)
+                    except asyncio.QueueFull:
+                        # Drop oldest frame
+                        try:
+                            self.camera_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                        self.camera_queue.put_nowait(control_frame)
+                    continue
+
+                # Camera data (260 bytes, Protocol v3)
+                elif len(raw) == 260:
                     server_timestamp = time.time() * 1000.0  # ms
 
-                    # Parse Frontend camera (160 bytes → CameraFrame)
+                    # Parse Frontend camera (260 bytes → CameraFrame, Protocol v3)
                     camera = parse_frontend_camera(
                         raw,
                         width=self.width,

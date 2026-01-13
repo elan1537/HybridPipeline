@@ -43,89 +43,117 @@ def parse_frontend_camera(
     device: str = "cpu"  # Ignored for numpy implementation
 ) -> CameraFrame:
     """
-    Parse Frontend WebSocket camera data (160 bytes) to CameraFrame.
+    Parse Frontend WebSocket camera data (260 bytes) to CameraFrame.
 
-    Frontend format (160 bytes):
-      [0:128]   - Camera data (32 floats):
-                  - eye (3), target (3), intrinsics (9), unused (17)
-      [128:132] - frame_id (uint32)
-      [132:136] - padding (4 bytes)
-      [136:144] - client_timestamp (float64)
-      [144:148] - time_index (float32)
-      [148:160] - padding (12 bytes)
+    Protocol v3 (260 bytes):
+        Camera data (224 bytes = 56 floats):
+            - view_matrix: 16 floats (0-15) - Camera→World transform
+            - projection_matrix: 16 floats (16-31) - Camera→Clip transform
+            - intrinsics: 9 floats (32-40) - Pixel-space intrinsics (3×3)
+            - position: 3 floats (41-43) - Camera position in world space
+            - target: 3 floats (44-46) - Camera target (lookAt point) in world space
+            - up: 3 floats (47-49) - Camera up vector
+            - reserved: 6 floats (50-55)
+        Metadata (36 bytes):
+            - frame_id: 4 bytes (224-228)
+            - padding: 4 bytes (228-232)
+            - client_timestamp: 8 bytes (232-240)
+            - time_index: 4 bytes (240-244)
+            - padding: 16 bytes (244-260)
+
+    Note: near and far clipping planes are extracted from the projection matrix.
+          If extraction fails, the provided near/far arguments are used as fallback.
 
     Args:
-        raw: 160-byte camera data from Frontend
+        raw: 260-byte camera data from Frontend (Protocol v3)
         width: Viewport width
         height: Viewport height
-        near: Near clipping plane
-        far: Far clipping plane
+        near: Near clipping plane (default, may be overridden)
+        far: Far clipping plane (default, may be overridden)
         device: Device (ignored, kept for API compatibility)
 
     Returns:
-        CameraFrame object with numpy arrays
+        CameraFrame object with numpy arrays (including position, target, up)
 
     Raises:
         ValueError: If data size is incorrect
     """
-    if len(raw) != 160:
-        raise ValueError(f"Invalid camera data size: {len(raw)} (expected 160)")
+    if len(raw) != 260:
+        raise ValueError(f"Invalid camera data size: {len(raw)} (expected 260, got {len(raw)})")
 
-    # Parse camera data (128 bytes = 32 floats)
-    vals = struct.unpack("<32f", raw[:128])
+    # Parse camera data (224 bytes = 56 floats)
+    camera_data = struct.unpack("<56f", raw[:224])
 
-    # Extract eye, target (first 6 floats)
-    # Note: Y-axis flip from Frontend coordinate system
-    eye = np.array([vals[0], -vals[1], vals[2]], dtype=np.float32)
-    target = np.array([vals[3], -vals[4], vals[5]], dtype=np.float32)
-    up = np.array([0., 1., 0.], dtype=np.float32)
+    # Parse metadata
+    frame_id = struct.unpack_from("<I", raw, 224)[0]
+    client_timestamp = struct.unpack_from("<d", raw, 232)[0]
+    time_index = struct.unpack_from("<f", raw, 240)[0]
 
-    # Compute view matrix (look-at transformation)
-    # Forward axis (z)
-    zaxis = target - eye
-    zaxis = zaxis / np.linalg.norm(zaxis)
+    # Frame counting for logging
+    if not hasattr(parse_frontend_camera, 'frame_count'):
+        parse_frontend_camera.frame_count = 0
+    parse_frontend_camera.frame_count += 1
 
-    # Right axis (x)
-    xaxis = np.cross(up, zaxis)
-    xaxis = xaxis / np.linalg.norm(xaxis)
+    # Extract view_matrix (indices 0-15) - NO VALIDATION, direct use
+    view_matrix = np.array(camera_data[0:16], dtype=np.float32).reshape(4, 4)
 
-    # Up axis (y)
-    yaxis = np.cross(zaxis, xaxis)
+    # Extract projection_matrix (indices 16-31)
+    projection = np.array(camera_data[16:32], dtype=np.float32).reshape(4, 4)
 
-    # Rotation matrix (world to camera)
-    R_w2c = np.array([xaxis, yaxis, zaxis], dtype=np.float32)
-
-    # Translation vector
-    t = -R_w2c @ eye
-
-    # Build 4x4 view matrix
-    view_matrix = np.eye(4, dtype=np.float32)
-    view_matrix[:3, :3] = R_w2c
-    view_matrix[:3, 3] = t
-
-    # Extract intrinsics (9 floats starting at index 6)
-    intrinsics_vals = vals[6:15]
+    # Extract intrinsics (indices 32-40) - NO VALIDATION, direct use
+    # These come from getCameraIntrinsics() which already ensures correct format
+    intrinsics_vals = camera_data[32:41]
     intrinsics = np.array([
         [intrinsics_vals[0], intrinsics_vals[1], intrinsics_vals[2]],
         [intrinsics_vals[3], intrinsics_vals[4], intrinsics_vals[5]],
         [intrinsics_vals[6], intrinsics_vals[7], intrinsics_vals[8]]
     ], dtype=np.float32)
 
-    # Parse metadata (32 bytes)
-    frame_id = struct.unpack_from("<I", raw, 128)[0]
-    client_timestamp = struct.unpack_from("<d", raw, 136)[0]
-    time_index = struct.unpack_from("<f", raw, 144)[0]
+    # Extract position, target, up (indices 41-49) - Protocol v3
+    position = np.array(camera_data[41:44], dtype=np.float32)
+    target = np.array(camera_data[44:47], dtype=np.float32)
+    up = np.array(camera_data[47:50], dtype=np.float32)
+
+    # Extract near/far from projection matrix (optional)
+    # THREE.js projection matrix format (column-major):
+    # P[2,2] = -(far+near)/(far-near), P[2,3] = -2*far*near/(far-near)
+    # Row-major indices: [10] = P[2,2], [11] = P[3,2] (0), [14] = P[2,3]
+    A = projection[2, 2]  # -(far+near)/(far-near)
+    B = projection[2, 3]  # -2*far*near/(far-near)
+
+    if abs(A) > 1e-6 and abs(B) > 1e-6:
+        near_extracted = B / (A - 1.0)
+        far_extracted = B / (A + 1.0)
+
+        # Validate and use extracted values
+        if near_extracted > 0 and far_extracted > near_extracted:
+            near = near_extracted
+            far = far_extracted
+
+    # Log for debugging (first 3 frames or every 60 frames)
+    if parse_frontend_camera.frame_count <= 3 or parse_frontend_camera.frame_count % 60 == 0:
+        print(f"\n[Transport] Frame {frame_id} (Protocol v3):")
+        print(f"  view_matrix:\n{view_matrix}")
+        print(f"  intrinsics:\n{intrinsics}")
+        print(f"  position: {position}")
+        print(f"  target: {target}")
+        print(f"  up: {up}")
+        print(f"  near={near:.3f}, far={far:.3f}")
+        print(f"  time_index={time_index:.6f}")
 
     import time
     server_timestamp = time.time() * 1000.0  # ms
 
     return CameraFrame(
-        view_matrix=view_matrix,  # (4, 4) numpy array
-        intrinsics=intrinsics,     # (3, 3) numpy array
+        view_matrix=view_matrix,      # (4, 4) numpy array
+        intrinsics=intrinsics,         # (3, 3) numpy array
         width=width,
         height=height,
         near=near,
         far=far,
+        position=position,             # (3,) numpy array - camera position
+        target=target,                 # (3,) numpy array - lookAt target
+        up=up,                         # (3,) numpy array - up vector
         time_index=time_index,
         frame_id=frame_id,
         client_timestamp=client_timestamp,

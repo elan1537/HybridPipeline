@@ -38,6 +38,12 @@ class CameraFrame:
         height: Image height in pixels
         near: Near clipping plane distance
         far: Far clipping plane distance
+        position: Camera position in world space (3,)
+                  Can be torch.Tensor (Renderer) or np.ndarray (Transport)
+        target: Camera target/lookAt point in world space (3,)
+                Can be torch.Tensor (Renderer) or np.ndarray (Transport)
+        up: Camera up vector (3,)
+            Can be torch.Tensor (Renderer) or np.ndarray (Transport)
         time_index: Temporal index for dynamic scenes (4DGS, etc.)
         frame_id: Frame identifier for tracking
         client_timestamp: Client send timestamp (ms)
@@ -49,6 +55,9 @@ class CameraFrame:
     height: int
     near: float
     far: float
+    position: Optional[Union['torch.Tensor', np.ndarray]] = None
+    target: Optional[Union['torch.Tensor', np.ndarray]] = None
+    up: Optional[Union['torch.Tensor', np.ndarray]] = None
     time_index: Optional[float] = None
     frame_id: Optional[int] = None
     client_timestamp: Optional[float] = None

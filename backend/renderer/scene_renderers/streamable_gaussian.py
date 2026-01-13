@@ -49,6 +49,13 @@ class StreamableGaussian(BaseSceneRenderer):
         self.iterations_s2: int = 50
         self.initialized: bool = False
 
+        # Weight loading pattern (for dynamic PLY loading)
+        self.weight_path_pattern: Optional[str] = None
+
+        # Total frames in the sequence (auto-detected from files)
+        self.total_frames: int = 300  # Default, will be updated in on_init
+        self.available_frame_ids: List[int] = []  # List of actual frame IDs from files
+
     async def on_init(self, config: Dict[str, Any]) -> bool:
         """
         Initialize the renderer.
@@ -56,32 +63,68 @@ class StreamableGaussian(BaseSceneRenderer):
         Args:
             config: Configuration dictionary with keys:
                 - model_path: Initial Gaussian PLY file (required)
-                - ntc_path: NTC weight path (required)
-                - ntc_config: NTC config JSON (required)
-                - dataset_path: COLMAP dataset path (required)
-                - weight_path: Pre-trained weights directory (optional, for inference-only)
+
+                Inference mode (weight_path_pattern provided):
+                - weight_path_pattern: Path pattern for pre-trained PLYs
+                  Example: '/path/to/checkpoints/frame_{frame_id:06d}/gaussian.ply'
+                - checkpoints_dir: Base checkpoints directory (for config.json lookup)
+
+                Training mode (ntc_path provided):
+                - ntc_path: NTC weight path
+                - ntc_config: NTC config JSON path
+                - dataset_path: COLMAP dataset path (optional)
+
                 - iterations_s1: Stage 1 iterations (optional, default: 50)
                 - iterations_s2: Stage 2 iterations (optional, default: 50)
 
         Returns:
             True if initialization succeeded
         """
-        self._validate_config(config, ['model_path', 'ntc_path', 'ntc_config', 'dataset_path'])
+        self._validate_config(config, ['model_path'])
 
         model_path = config['model_path']
-        ntc_path = config['ntc_path']
-        ntc_config_path = config['ntc_config']
-        self.dataset_path = config['dataset_path']
-        weight_path = config.get('weight_path', None)
+        self.dataset_path = config.get('dataset_path', '')
+        self.weight_path_pattern = config.get('weight_path_pattern', None)
         self.iterations_s1 = config.get('iterations_s1', 50)
         self.iterations_s2 = config.get('iterations_s2', 50)
 
-        print("[INIT] StreamableGaussian Renderer Initialization")
-        print(f"[INIT] Model: {model_path}")
-        print(f"[INIT] NTC: {ntc_path}")
-        print(f"[INIT] Dataset: {self.dataset_path}")
-        if weight_path:
-            print(f"[INIT] Weight Path: {weight_path} (inference-only mode)")
+        # Determine mode: inference or training
+        if self.weight_path_pattern:
+            # Inference mode: Load config from checkpoints directory
+            checkpoints_dir = config.get('checkpoints_dir')
+            if not checkpoints_dir:
+                raise ValueError("checkpoints_dir is required for inference mode")
+
+            ntc_config_path = os.path.join(checkpoints_dir, 'config.json')
+            if not os.path.exists(ntc_config_path):
+                raise FileNotFoundError(
+                    f"config.json not found in checkpoints directory: {checkpoints_dir}\n"
+                    f"Please copy NTC config to: {ntc_config_path}"
+                )
+
+            # NTC weights will be loaded per-frame from checkpoints/frame_X/ntc.pth
+            ntc_path = None
+
+            print("[INIT] StreamableGaussian Renderer - Inference Mode")
+            print(f"[INIT] Model: {model_path}")
+            print(f"[INIT] Checkpoints: {checkpoints_dir}")
+            print(f"[INIT] NTC Config: {ntc_config_path}")
+            print(f"[INIT] Weight Pattern: {self.weight_path_pattern}")
+        else:
+            # Training mode: Use provided paths
+            ntc_path = config.get('ntc_path')
+            ntc_config_path = config.get('ntc_config')
+
+            if not ntc_path or not ntc_config_path:
+                raise ValueError("ntc_path and ntc_config are required for training mode")
+
+            print("[INIT] StreamableGaussian Renderer - Training Mode")
+            print(f"[INIT] Model: {model_path}")
+            print(f"[INIT] NTC: {ntc_path}")
+            print(f"[INIT] NTC Config: {ntc_config_path}")
+            if self.dataset_path:
+                print(f"[INIT] Dataset: {self.dataset_path}")
+
         print(f"[INIT] Iterations: S1={self.iterations_s1}, S2={self.iterations_s2}")
 
         # Setup optimization parameters
@@ -116,80 +159,141 @@ class StreamableGaussian(BaseSceneRenderer):
             print(f"[ERROR] Failed to load Gaussian model: {e}")
             return False
 
-        # Load pre-trained weights if provided (inference-only mode)
-        if weight_path:
-            loaded_frames = self._load_weights_from_directory(weight_path)
-            if loaded_frames > 0:
-                print(f"[INIT] Loaded {loaded_frames} pre-trained frames from {weight_path}")
-            else:
-                print(f"[WARNING] No PLY files found in {weight_path}")
 
         # Setup NTC model
-        try:
-            model = tcnn.NetworkWithInputEncoding(
-                n_input_dims=3,
-                n_output_dims=8,
-                encoding_config=ntc_conf["encoding"],
-                network_config=ntc_conf["network"]
-            ).to(torch.device("cuda"))
+        if ntc_path:
+            # Training mode: Load NTC once at initialization
+            try:
+                model = tcnn.NetworkWithInputEncoding(
+                    n_input_dims=3,
+                    n_output_dims=8,
+                    encoding_config=ntc_conf["encoding"],
+                    network_config=ntc_conf["network"]
+                ).to(torch.device("cuda"))
 
-            xyz_bound_min, xyz_bound_max = self.gaussians.get_xyz_bound(86.6)
-            self.ntc = NeuralTransformationCache(model, xyz_bound_min, xyz_bound_max)
-            self.ntc.load_state_dict(torch.load(ntc_path))
+                xyz_bound_min, xyz_bound_max = self.gaussians.get_xyz_bound(86.6)
+                self.ntc = NeuralTransformationCache(model, xyz_bound_min, xyz_bound_max)
+                self.ntc.load_state_dict(torch.load(ntc_path))
 
-            ntc_lr = ntc_conf.get("optimizer", {}).get("learning_rate", 0.002)
-            self.ntc_optimizer = torch.optim.Adam(self.ntc.parameters(), lr=ntc_lr)
+                ntc_lr = ntc_conf.get("optimizer", {}).get("learning_rate", 0.002)
+                self.ntc_optimizer = torch.optim.Adam(self.ntc.parameters(), lr=ntc_lr)
 
-            print("[INIT] NTC model loaded successfully")
-        except Exception as e:
-            print(f"[ERROR] Failed to setup NTC: {e}")
-            return False
+                print("[INIT] NTC model loaded successfully")
+            except Exception as e:
+                print(f"[ERROR] Failed to setup NTC: {e}")
+                return False
+        else:
+            # Inference mode: NTC will be loaded per-frame from checkpoints
+            print("[INIT] Inference mode: NTC will be loaded per-frame from checkpoints")
+
+            # Create NTC structure (weights will be loaded per-frame)
+            try:
+                model = tcnn.NetworkWithInputEncoding(
+                    n_input_dims=3,
+                    n_output_dims=8,
+                    encoding_config=ntc_conf["encoding"],
+                    network_config=ntc_conf["network"]
+                ).to(torch.device("cuda"))
+
+                xyz_bound_min, xyz_bound_max = self.gaussians.get_xyz_bound(86.6)
+                self.ntc = NeuralTransformationCache(model, xyz_bound_min, xyz_bound_max)
+                self.ntc_optimizer = None  # Not used in inference mode
+
+                print(f"[INIT] NTC structure created (weights will be loaded per-frame)")
+            except Exception as e:
+                print(f"[ERROR] Failed to create NTC structure: {e}")
+                return False
+
+        # Auto-detect total frames from weight_path_pattern
+        if self.weight_path_pattern:
+            try:
+                import glob
+                import re
+                # Convert pattern to glob pattern
+                # e.g., "/path/frame_{frame_id:06d}/gaussian.ply" -> "/path/frame_*/gaussian.ply"
+                glob_pattern = self.weight_path_pattern.replace("{frame_id:06d}", "*")
+                matching_files = sorted(glob.glob(glob_pattern))
+
+                if matching_files:
+                    # Extract frame IDs from filenames
+                    # e.g., "/path/frame_000001/gaussian.ply" -> 1
+                    frame_id_pattern = self.weight_path_pattern.replace("{frame_id:06d}", r"(\d+)")
+                    self.available_frame_ids = []
+
+                    for filepath in matching_files:
+                        match = re.search(r"frame_(\d+)", filepath)
+                        if match:
+                            frame_id = int(match.group(1))
+                            self.available_frame_ids.append(frame_id)
+
+                    self.available_frame_ids.sort()
+                    self.total_frames = len(self.available_frame_ids)
+
+                    print(f"[INIT] Auto-detected {self.total_frames} frames from weight pattern")
+                    print(f"[INIT] Frame ID range: {self.available_frame_ids[0]} ~ {self.available_frame_ids[-1]}")
+                else:
+                    print(f"[INIT] No frames found with pattern: {glob_pattern}")
+                    print(f"[INIT] Using default total_frames={self.total_frames}")
+            except Exception as e:
+                print(f"[WARNING] Failed to auto-detect total frames: {e}")
+                print(f"[INIT] Using default total_frames={self.total_frames}")
 
         self.initialized = True
         print("[INIT] Initialization completed successfully")
         return True
 
-    def _load_weights_from_directory(self, weight_path: str) -> int:
+    def _get_ply_path_for_frame(self, frame_id: int) -> Optional[str]:
         """
-        Load pre-trained PLY files from a directory.
+        Get PLY file path for a specific frame using the weight_path_pattern.
 
         Args:
-            weight_path: Directory containing PLY files (e.g., temp_states/)
+            frame_id: Frame index
 
         Returns:
-            Number of frames loaded
+            PLY file path if pattern is set, None otherwise
         """
-        import glob
+        if not self.weight_path_pattern:
+            return None
 
-        if not os.path.exists(weight_path):
-            print(f"[WARNING] Weight path does not exist: {weight_path}")
-            return 0
+        # Format the pattern with frame_id
+        ply_path = self.weight_path_pattern.format(frame_id=frame_id)
 
-        # Find all PLY files matching pattern: frame_XXXXXX.ply
-        ply_files = sorted(glob.glob(os.path.join(weight_path, "frame_*.ply")))
+        # Check if file exists
+        if os.path.exists(ply_path):
+            return ply_path
+        else:
+            print(f"[WARNING] PLY file not found: {ply_path}")
+            return None
 
-        if not ply_files:
-            print(f"[WARNING] No PLY files found in {weight_path}")
-            return 0
+    def _load_ntc_for_frame(self, frame_id: int) -> bool:
+        """
+        Load NTC weights for a specific frame (inference mode only).
 
-        print(f"[INIT] Loading {len(ply_files)} pre-trained frames...")
-        loaded_count = 0
+        Args:
+            frame_id: Frame index
 
-        for ply_path in ply_files:
-            # Extract frame_id from filename: frame_000001.ply -> 1
-            basename = os.path.basename(ply_path)
-            try:
-                frame_id = int(basename.replace("frame_", "").replace(".ply", ""))
-            except ValueError:
-                print(f"[WARNING] Invalid PLY filename format: {basename}")
-                continue
+        Returns:
+            True if loaded successfully, False otherwise
+        """
+        if not self.weight_path_pattern:
+            return False
 
-            # Register PLY path in gaussian_state
-            self.gaussians_state.ply_states[frame_id] = ply_path
-            loaded_count += 1
-            print(f"[INIT] Registered frame {frame_id}: {ply_path}")
+        # Derive NTC path from PLY pattern
+        # Example: /checkpoints/frame_000001/gaussian.ply -> /checkpoints/frame_000001/ntc.pth
+        ply_path = self.weight_path_pattern.format(frame_id=frame_id)
+        ntc_path = ply_path.replace('gaussian.ply', 'ntc.pth')
 
-        return loaded_count
+        if not os.path.exists(ntc_path):
+            print(f"[WARNING] NTC file not found: {ntc_path}")
+            return False
+
+        try:
+            self.ntc.load_state_dict(torch.load(ntc_path))
+            print(f"[RENDER] Loaded NTC for frame {frame_id}: {ntc_path}")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to load NTC for frame {frame_id}: {e}")
+            return False
 
     async def train(self, cameras: List, frame_id: int, **kwargs) -> Dict[str, Any]:
         """
@@ -293,30 +397,75 @@ class StreamableGaussian(BaseSceneRenderer):
         if not self.initialized:
             raise RuntimeError("Renderer not initialized. Call on_init() first.")
 
+        # Convert time_index to frame_id if provided (frontend sends normalized 0.0~1.0)
+        # time_index is mapped to available_frame_ids list
         frame_idx = camera.frame_id
+        if frame_idx is None and camera.time_index is not None:
+            # Clamp time_index to [0.0, 1.0] range (in case of floating point errors)
+            time_index_clamped = max(0.0, min(1.0, camera.time_index))
+
+            # Map time_index to index in available_frame_ids list
+            if self.available_frame_ids:
+                # Use available_frame_ids to map time_index to actual frame_id
+                idx = int(time_index_clamped * (len(self.available_frame_ids) - 1))
+                frame_idx = idx  # Use index directly, will be mapped below
+                print(f"[RENDER] Converted time_index={camera.time_index:.4f} → list_idx={frame_idx}")
+            else:
+                # Fallback to old behavior if available_frame_ids is not set
+                frame_idx = int(time_index_clamped * (self.total_frames - 1))
+                print(f"[RENDER] Converted time_index={camera.time_index:.4f} → frame_idx={frame_idx}")
+
         if frame_idx is None:
-            frame_idx = 1
+            frame_idx = 0
 
-        # Ensure Gaussian state is loaded
-        if frame_idx not in self.gaussians_state.states and frame_idx not in self.gaussians_state.ply_states:
-            raise RuntimeError(
-                f"No Gaussian state found for frame {frame_idx}. "
-                f"Call train() first or ensure PLY file exists."
-            )
+        # CRITICAL: Map any frame_idx to actual available frame using modulo
+        # This ensures we always get a valid frame, even if frame_idx > total_frames
+        if self.available_frame_ids:
+            # frame_idx is treated as an index into available_frame_ids
+            idx = frame_idx % len(self.available_frame_ids)
+            actual_frame_id = self.available_frame_ids[idx]
+            if frame_idx != idx:
+                print(f"[RENDER] Frame wrapped: input={frame_idx} → list_idx={idx} → frame_id={actual_frame_id}")
+            frame_idx = actual_frame_id
+        else:
+            # Fallback: simple modulo with total_frames
+            frame_idx = frame_idx % self.total_frames
 
-        # Load from PLY if not in memory
-        if self.gaussians is None or (hasattr(self, 'current_frame_idx') and self.current_frame_idx != frame_idx):
-            fresh_gaussians = self.gaussians_state.create_fresh_gaussian_with_ply(
-                frame_idx,
-                sh_degree=1,
-                rotate_sh=False,
-                gaussian_class=TemporalGaussianModel
-            )
-            if fresh_gaussians is None:
-                raise RuntimeError(f"Failed to load Gaussian state for frame {frame_idx}")
-            self.gaussians = fresh_gaussians
-            self.current_frame_idx = frame_idx
-            print(f"[RENDER] Loaded Gaussian state for frame {frame_idx}")
+        # Load Gaussian state for this frame
+        # First check if already in memory
+        if self.gaussians is None or self.current_frame_idx != frame_idx:
+            # Try to get PLY path using pattern
+            ply_path = self._get_ply_path_for_frame(frame_idx)
+
+            if ply_path:
+                # Register PLY path in state (for create_fresh_gaussian_with_ply)
+                self.gaussians_state.ply_states[frame_idx] = ply_path
+                print(f"[RENDER] Using PLY: {ply_path}")
+
+            # Try to load from registered PLY states or memory
+            if frame_idx in self.gaussians_state.ply_states or frame_idx in self.gaussians_state.states:
+                fresh_gaussians = self.gaussians_state.create_fresh_gaussian_with_ply(
+                    frame_idx,
+                    sh_degree=1,
+                    rotate_sh=False,
+                    gaussian_class=TemporalGaussianModel
+                )
+                if fresh_gaussians is None:
+                    raise RuntimeError(f"Failed to load Gaussian state for frame {frame_idx}")
+                self.gaussians = fresh_gaussians
+                self.current_frame_idx = frame_idx
+                print(f"[RENDER] Loaded Gaussian state for frame {frame_idx}")
+
+                # Load NTC for this frame (inference mode only)
+                if self.weight_path_pattern:
+                    if not self._load_ntc_for_frame(frame_idx):
+                        print(f"[WARNING] NTC not loaded for frame {frame_idx}, using existing NTC")
+            else:
+                raise RuntimeError(
+                    f"No Gaussian state found for frame {frame_idx}. "
+                    f"No PLY file at pattern or in memory. "
+                    f"Pattern: {self.weight_path_pattern}"
+                )
 
         # Convert CameraFrame to 3DGStream Camera
         stream_camera = self._convert_to_stream_camera(camera)
@@ -365,8 +514,26 @@ class StreamableGaussian(BaseSceneRenderer):
         FoVx = 2.0 * np.arctan(camera.width / (2.0 * fx))
         FoVy = 2.0 * np.arctan(camera.height / (2.0 * fy))
 
-        # Get view matrix
-        view_matrix = camera.view_matrix.cuda()
+        # Get view matrix (standard row-major format from Transport)
+        view_matrix_standard = camera.view_matrix.cuda()
+
+        # Log received view matrix (only first 3 frames or every 60 frames)
+        frame_id = camera.frame_id if camera.frame_id is not None else 0
+        if not hasattr(self, '_convert_camera_call_count'):
+            self._convert_camera_call_count = 0
+        self._convert_camera_call_count += 1
+
+        if self._convert_camera_call_count <= 3 or self._convert_camera_call_count % 60 == 0:
+            print(f"\n[Renderer] Frame {frame_id} - Received view_matrix (standard):")
+            print(f"  view_matrix shape: {view_matrix_standard.shape}")
+            print(f"  view_matrix:\n{view_matrix_standard.cpu().numpy()}")
+
+        # Convert to 3DGStream format (column-major: transpose)
+        # 3DGStream uses: world_view_transform = getWorld2View2(...).transpose(0, 1)
+        view_matrix = view_matrix_standard.T
+
+        if self._convert_camera_call_count <= 3 or self._convert_camera_call_count % 60 == 0:
+            print(f"  Converted to 3DGStream format (transposed):\n{view_matrix.cpu().numpy()}")
 
         # Compute projection matrix (same as 3DGStream)
         from utils.graphics_utils import getProjectionMatrix
@@ -382,9 +549,22 @@ class StreamableGaussian(BaseSceneRenderer):
             view_matrix.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))
         ).squeeze(0)
 
-        # Compute camera center (critical for correct rendering!)
+        # Compute camera center (3DGStream method for transposed matrix)
         view_inv = torch.inverse(view_matrix)
         camera_center = view_inv[3, :3]
+
+        if self._convert_camera_call_count <= 3 or self._convert_camera_call_count % 60 == 0:
+            print(f"  camera_center (3DGS inv[3,:3]): {camera_center.cpu().numpy()}")
+
+            # Also verify with standard method on original matrix
+            R_standard = view_matrix_standard[:3, :3].cpu().numpy()
+            t_standard = view_matrix_standard[:3, 3].cpu().numpy()
+            camera_center_standard = -R_standard.T @ t_standard
+            print(f"  camera_center (std -R^T@t):     {camera_center_standard}")
+            print(f"  Difference: {np.linalg.norm(camera_center.cpu().numpy() - camera_center_standard):.8f}")
+
+            # Verify orthogonality
+            print(f"  Rotation det(R): {np.linalg.det(R_standard):.6f} (should be 1.0)")
 
         # Create camera object matching 3DGStream Camera class
         class SimpleCameraWrapper:
@@ -412,6 +592,58 @@ class StreamableGaussian(BaseSceneRenderer):
             znear=camera.near,
             zfar=camera.far
         )
+
+    def setup_frame_data(self, frame_idx: int):
+        """
+        Load COLMAP camera data for a specific frame.
+
+        Args:
+            frame_idx: Frame index (0-299 for 300-frame sequences)
+
+        Returns:
+            List of 3DGStream Camera objects for training
+
+        Raises:
+            RuntimeError: If dataset_path not set or frame data not found
+        """
+        if not self.dataset_path:
+            raise RuntimeError("dataset_path not configured. Set it in on_init() config.")
+
+        from pathlib import Path
+        import argparse
+
+        frame_path = Path(self.dataset_path) / f"frame{frame_idx:06d}"
+
+        if not frame_path.exists():
+            raise RuntimeError(f"Frame data not found: {frame_path}")
+
+        print(f"[DATA] Loading Frame {frame_idx:06d} from {frame_path}")
+
+        # Setup args for COLMAP loader
+        args = argparse.Namespace()
+        args.source_path = str(frame_path)
+        args.images = "images"
+        args.eval = False
+        args.ply_name = "points3D.ply"
+        args.resolution = 1
+        args.data_device = "cuda"
+
+        # Import 3DGStream modules
+        from scene.dataset_readers import sceneLoadTypeCallbacks
+        from utils.camera_utils import cameraList_from_camInfos
+
+        # Load scene info and cameras
+        scene_info = sceneLoadTypeCallbacks["Colmap"](
+            args.source_path,
+            args.images,
+            args.eval,
+            ply_name=args.ply_name
+        )
+        train_cameras = cameraList_from_camInfos(scene_info.train_cameras, 1, args)
+
+        print(f"[DATA] Loaded {len(train_cameras)} cameras for frame {frame_idx:06d}")
+
+        return train_cameras
 
     async def _train_stage1(
         self,

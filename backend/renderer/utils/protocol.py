@@ -26,15 +26,18 @@ from renderer.data_types import CameraFrame, RenderPayload
 # Camera Frame Protocol (Frontend ↔ Transport ↔ Renderer)
 # =============================================================================
 
-CAMERA_FRAME_SIZE = 168  # bytes
-CONTROL_MESSAGE_SIZE = 8  # bytes
+CAMERA_FRAME_SIZE = 204  # bytes (Protocol v3: includes position, target, up)
+CONTROL_MESSAGE_SIZE = 8  # bytes (legacy, for backward compatibility)
+CONTROL_MESSAGE_EXT_SIZE = 12  # bytes (extended with parameter)
 
 # Control message commands
 CONTROL_CMD_RESET_ENCODER = 1
+CONTROL_CMD_CHANGE_ENCODER = 2
 
 """
-Control Message Wire Format (8 bytes):
+Control Message Wire Format:
 
+Basic (8 bytes):
 Offset  Size  Type     Field
 ------  ----  -------  ------------------
 0       4     uint32   magic (0xDEADBEEF)
@@ -42,10 +45,21 @@ Offset  Size  Type     Field
 ------
 Total:  8 bytes
 
-Commands:
-- 1: Reset encoder (for WebSocket reconnection)
+Extended (12 bytes):
+Offset  Size  Type     Field
+------  ----  -------  ------------------
+0       4     uint32   magic (0xDEADBEEF)
+4       4     uint32   command
+8       4     uint32   param
+------
+Total:  12 bytes
 
-Camera Frame Wire Format (168 bytes):
+Commands:
+- 1: Reset encoder (for WebSocket reconnection) - 8 bytes
+- 2: Change encoder type - 12 bytes
+  * param: 0=JPEG, 1=H264, 2=Raw
+
+Camera Frame Wire Format (204 bytes, Protocol v3):
 
 Offset  Size  Type     Field
 ------  ----  -------  ------------------
@@ -60,21 +74,24 @@ Offset  Size  Type     Field
 124     4     -        padding (alignment)
 128     8     float64  client_timestamp
 136     8     float64  server_timestamp
-144     24    -        reserved (future use)
+144     12    float32  position (3 floats - camera position)
+156     12    float32  target (3 floats - lookAt target)
+168     12    float32  up (3 floats - up vector)
+180     24    -        reserved (future use)
 ------
-Total:  168 bytes
+Total:  204 bytes
 """
 
 
 def pack_camera_frame(camera: CameraFrame) -> bytes:
     """
-    Serialize CameraFrame to wire format (168 bytes).
+    Serialize CameraFrame to wire format (204 bytes, Protocol v3).
 
     Args:
-        camera: CameraFrame object
+        camera: CameraFrame object (with position, target, up)
 
     Returns:
-        bytes: 168-byte packed camera data
+        bytes: 204-byte packed camera data
 
     Raises:
         ValueError: If camera parameters are invalid
@@ -89,9 +106,15 @@ def pack_camera_frame(camera: CameraFrame) -> bytes:
     if TORCH_AVAILABLE and isinstance(camera.view_matrix, torch.Tensor):
         view_matrix = camera.view_matrix.cpu().numpy()
         intrinsics = camera.intrinsics.cpu().numpy()
+        position = camera.position.cpu().numpy() if camera.position is not None else np.zeros(3, dtype=np.float32)
+        target = camera.target.cpu().numpy() if camera.target is not None else np.zeros(3, dtype=np.float32)
+        up = camera.up.cpu().numpy() if camera.up is not None else np.array([0, 1, 0], dtype=np.float32)
     else:
         view_matrix = camera.view_matrix
         intrinsics = camera.intrinsics
+        position = camera.position if camera.position is not None else np.zeros(3, dtype=np.float32)
+        target = camera.target if camera.target is not None else np.zeros(3, dtype=np.float32)
+        up = camera.up if camera.up is not None else np.array([0, 1, 0], dtype=np.float32)
 
     # Pack view matrix (64 bytes)
     view_bytes = view_matrix.astype(np.float32).tobytes()
@@ -99,7 +122,7 @@ def pack_camera_frame(camera: CameraFrame) -> bytes:
     # Pack intrinsics (36 bytes)
     intrinsics_bytes = intrinsics.astype(np.float32).tobytes()
 
-    # Pack metadata
+    # Pack metadata (44 bytes)
     metadata_bytes = struct.pack("<IIfffIIdd",
         camera.width,                                    # uint32
         camera.height,                                   # uint32
@@ -112,21 +135,26 @@ def pack_camera_frame(camera: CameraFrame) -> bytes:
         camera.server_timestamp if camera.server_timestamp else 0.0   # float64
     )
 
+    # Pack position, target, up (36 bytes total)
+    position_bytes = position.astype(np.float32).tobytes()  # 12 bytes
+    target_bytes = target.astype(np.float32).tobytes()      # 12 bytes
+    up_bytes = up.astype(np.float32).tobytes()              # 12 bytes
+
     # Reserved space (24 bytes)
     reserved = b'\x00' * 24
 
-    return view_bytes + intrinsics_bytes + metadata_bytes + reserved
+    return view_bytes + intrinsics_bytes + metadata_bytes + position_bytes + target_bytes + up_bytes + reserved
 
 
 def parse_camera_frame(data: bytes) -> CameraFrame:
     """
-    Parse wire format to CameraFrame (168 bytes).
+    Parse wire format to CameraFrame (204 bytes, Protocol v3).
 
     Args:
-        data: 168-byte camera data
+        data: 204-byte camera data
 
     Returns:
-        CameraFrame object
+        CameraFrame object (with position, target, up)
 
     Raises:
         ValueError: If data size is incorrect
@@ -146,6 +174,16 @@ def parse_camera_frame(data: bytes) -> CameraFrame:
     width, height, near, far, time_index, frame_id, _, client_ts, server_ts = \
         struct.unpack("<IIfffIIdd", data[100:144])
 
+    # Parse position, target, up (36 bytes total)
+    position_floats = struct.unpack("<3f", data[144:156])
+    position = np.array(position_floats, dtype=np.float32)
+
+    target_floats = struct.unpack("<3f", data[156:168])
+    target = np.array(target_floats, dtype=np.float32)
+
+    up_floats = struct.unpack("<3f", data[168:180])
+    up = np.array(up_floats, dtype=np.float32)
+
     # Reserved space (24 bytes) - ignored
 
     return CameraFrame(
@@ -155,6 +193,9 @@ def parse_camera_frame(data: bytes) -> CameraFrame:
         height=height,
         near=near,
         far=far,
+        position=position,
+        target=target,
+        up=up,
         time_index=time_index,
         frame_id=frame_id,
         client_timestamp=client_ts,
@@ -162,18 +203,25 @@ def parse_camera_frame(data: bytes) -> CameraFrame:
     )
 
 
-def pack_control_message(command: int) -> bytes:
+def pack_control_message(command: int, param: int = 0) -> bytes:
     """
     Create a control message for Renderer.
 
     Args:
         command: Control command (e.g., CONTROL_CMD_RESET_ENCODER)
+        param: Optional parameter (for CONTROL_CMD_CHANGE_ENCODER: 0=JPEG, 1=H264, 2=Raw)
 
     Returns:
-        bytes: 8-byte control message
+        bytes: 8 or 12-byte control message
     """
     magic = 0xDEADBEEF
-    return struct.pack("<II", magic, command)
+
+    # If command requires parameter, use extended format (12 bytes)
+    if command == CONTROL_CMD_CHANGE_ENCODER:
+        return struct.pack("<III", magic, command, param)
+    else:
+        # Legacy format (8 bytes)
+        return struct.pack("<II", magic, command)
 
 
 def is_control_message(data: bytes) -> bool:
@@ -186,34 +234,44 @@ def is_control_message(data: bytes) -> bool:
     Returns:
         bool: True if control message
     """
-    if len(data) != CONTROL_MESSAGE_SIZE:
+    # Support both 8-byte and 12-byte control messages
+    if len(data) != CONTROL_MESSAGE_SIZE and len(data) != CONTROL_MESSAGE_EXT_SIZE:
         return False
     magic = struct.unpack_from("<I", data, 0)[0]
     return magic == 0xDEADBEEF
 
 
-def parse_control_message(data: bytes) -> int:
+def parse_control_message(data: bytes) -> Tuple[int, int]:
     """
     Parse control message.
 
     Args:
-        data: 8-byte control message
+        data: 8 or 12-byte control message
 
     Returns:
-        int: Command code
+        Tuple[int, int]: (command, param)
+            - command: Command code
+            - param: Parameter (0 if not present)
 
     Raises:
         ValueError: If invalid control message
     """
-    if len(data) != CONTROL_MESSAGE_SIZE:
-        raise ValueError(f"Control message must be {CONTROL_MESSAGE_SIZE} bytes, got {len(data)}")
+    if len(data) not in [CONTROL_MESSAGE_SIZE, CONTROL_MESSAGE_EXT_SIZE]:
+        raise ValueError(f"Control message must be {CONTROL_MESSAGE_SIZE} or {CONTROL_MESSAGE_EXT_SIZE} bytes, got {len(data)}")
 
-    magic, command = struct.unpack("<II", data)
+    magic = struct.unpack_from("<I", data, 0)[0]
 
     if magic != 0xDEADBEEF:
         raise ValueError(f"Invalid control message magic: 0x{magic:08X}")
 
-    return command
+    if len(data) == CONTROL_MESSAGE_EXT_SIZE:
+        # Extended format with parameter
+        _, command, param = struct.unpack("<III", data)
+        return (command, param)
+    else:
+        # Legacy format without parameter
+        _, command = struct.unpack("<II", data)
+        return (command, 0)
 
 
 # =============================================================================

@@ -126,6 +126,22 @@ class TransportService:
                     print("[Transport] Frontend disconnected, waiting for reconnection...")
                     continue
 
+                # Check if this is a control message
+                if hasattr(camera, 'is_control') and camera.is_control:
+                    # Forward control message directly to Renderer via Unix Socket
+                    control_data = camera.control_data
+                    print(f"[Transport] Forwarding control message to Renderer ({len(control_data)} bytes)")
+
+                    try:
+                        # Send raw control bytes to Renderer's camera socket
+                        # send_camera() accepts both CameraFrame and raw bytes
+                        await self.backend_adapter.send_camera(control_data)
+                        print("[Transport] Control message forwarded successfully")
+                    except Exception as e:
+                        print(f"[Transport] Failed to forward control message: {e}")
+
+                    continue
+
                 # Send camera to Renderer
                 await self.backend_adapter.send_camera(camera)
 

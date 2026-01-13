@@ -4,7 +4,7 @@ Unix Socket Adapter for Backend (Renderer) communication.
 Transport Service acts as Unix Socket SERVER, waiting for Renderer to connect.
 
 Protocol:
-- Camera: Transport → Renderer (168 bytes)
+- Camera: Transport → Renderer (204 bytes, Protocol v3)
 - Video: Renderer → Transport (56 bytes header + data)
 """
 
@@ -28,7 +28,7 @@ class UnixSocketAdapter(BaseBackendAdapter):
     Responsibilities:
     - Start Unix Socket servers for camera and video
     - Wait for Renderer to connect
-    - Send camera data (168 bytes)
+    - Send camera data (204 bytes, Protocol v3)
     - Receive video data (56 bytes header + data)
     """
 
@@ -205,8 +205,19 @@ class UnixSocketAdapter(BaseBackendAdapter):
                 # Raw control message
                 data = camera
             else:
-                # Pack camera frame to 168 bytes
+                # Pack camera frame to 204 bytes (Protocol v3)
                 data = pack_camera_frame(camera)
+
+                # Debug: Log packed size (first 3 frames)
+                if not hasattr(self, '_send_count'):
+                    self._send_count = 0
+                self._send_count += 1
+
+                if self._send_count <= 3:
+                    print(f"[UnixSocket] DEBUG: Packed camera frame size: {len(data)} bytes")
+                    print(f"  position: {camera.position}")
+                    print(f"  target: {camera.target}")
+                    print(f"  up: {camera.up}")
 
             # Send to Renderer
             self.camera_writer.write(data)

@@ -1,3 +1,5 @@
+import { CameraFrame } from "./types";
+
 // Import debug logger for worker
 interface DebugLogger {
     setDebugEnabled(enabled: boolean): void;
@@ -101,12 +103,7 @@ interface ChunkMessage {
 
 interface CameraMessage {
     type: 'camera'
-    position: Float32Array
-    target: Float32Array
-    intrinsics: Float32Array
-    projection: Float32Array
-    frameId?: number,
-    timeIndex: number,
+    frame: CameraFrame
 }
 
 interface ConnectionMessage {
@@ -147,7 +144,17 @@ interface DebugToggleMessage {
     enabled: boolean
 }
 
-self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage | PingMessage | LatencyMessage | FPSMeasurementStartMessage | FPSMeasurementStopMessage | DebugToggleMessage>) => {
+interface ChangeEncoderMessage {
+    type: 'change-encoder'
+    encoderType: number  // 0=JPEG, 1=H264
+}
+
+interface ToggleJpegFallbackMessage {
+    type: 'toggle-jpeg-fallback'
+    enabled: boolean
+}
+
+self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMessage | ConnectionMessage | CloseMessage | PingMessage | LatencyMessage | FPSMeasurementStartMessage | FPSMeasurementStopMessage | DebugToggleMessage | ChangeEncoderMessage | ToggleJpegFallbackMessage>) => {
     const data = evt.data
 
     switch (data.type) {
@@ -159,7 +166,7 @@ self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMes
             decodeChunk(data.data)
             break
         case 'camera':
-            updateCamera(data)
+            updateCamera(data.frame)
             break
         case 'change':
             ws.close(1000, "Connection changed")
@@ -196,6 +203,17 @@ self.onmessage = async (evt: MessageEvent<InitMessage | ChunkMessage | CameraMes
         case 'debug-toggle':
             // Debug logging 토글
             debug.setDebugEnabled(data.enabled)
+            break
+        case 'change-encoder':
+            // Encoder 변경 요청
+            sendEncoderChange(data.encoderType)
+            break
+        case 'toggle-jpeg-fallback':
+            // JPEG fallback 모드 토글
+            const oldValue = jpegFallback;
+            jpegFallback = data.enabled;
+            console.log(`[Worker] toggle-jpeg-fallback: ${oldValue} → ${jpegFallback}`);
+            debug.logWorker(`JPEG fallback mode: ${jpegFallback ? 'enabled' : 'disabled'}`);
             break
     }
 }
@@ -273,51 +291,79 @@ function parseJPEGMessage(data: ArrayBuffer): {
     }
 }
 
-function updateCamera(data: CameraMessage) {
-    const position = new Float32Array(data.position);
-    const target = new Float32Array(data.target);
-    const intrinsics = new Float32Array(data.intrinsics);
-    const projection = new Float32Array(data.projection);
+function updateCamera(data: CameraFrame) {
+    // Check if WebSocket is ready
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn(`[Worker] updateCamera: WebSocket not ready (readyState=${ws?.readyState}), skipping frame ${data.frameId}`);
+        return;
+    }
+
+    console.log(data)
 
     // Debug: timeIndex 값 확인
     debug.logWorker(`[updateCamera] Received timeIndex: ${data.timeIndex} (type: ${typeof data.timeIndex})`);
 
-    const dv = new Float32Array(32); // 32 * 4 = 128 bytes
+    /**
+     * Protocol v3: 260 bytes total
+     * Camera data: 224 bytes (56 floats)
+     *   - view_matrix: 16 floats (0-15)
+     *   - projection_matrix: 16 floats (16-31)
+     *   - intrinsics: 9 floats (32-40)
+     *   - position: 3 floats (41-43)
+     *   - target: 3 floats (44-46)
+     *   - up: 3 floats (47-49)
+     *   - reserved: 6 floats (50-55)
+     * Metadata: 36 bytes
+     *   - frame_id: 4 bytes (224-228)
+     *   - padding: 4 bytes (228-232)
+     *   - client_timestamp: 8 bytes (232-240)
+     *   - time_index: 4 bytes (240-244)
+     *   - padding: 16 bytes (244-260)
+     */
 
-    // position (3 floats)
-    dv.set(position, 0);
+    const finalBuffer = new ArrayBuffer(260);
 
-    // target (3 floats) 
-    dv.set(target, 3);
+    // Camera data view (56 floats = 224 bytes)
+    const floatView = new Float32Array(finalBuffer, 0, 56);
 
-    // intrinsics (9 floats)
-    dv.set(intrinsics, 6);
+    // 0-15: view_matrix (16 floats)
+    floatView.set(data.view, 0);
 
-    // padding (1 float) - 서버에서 기대하는 0.0 값
-    dv[15] = 0.0;
+    // 16-31: projection_matrix (16 floats)
+    floatView.set(data.projection, 16);
 
-    // projection (16 floats)
-    dv.set(projection, 16);
+    // 32-40: intrinsics (9 floats)
+    floatView.set(data.intrinsics, 32);
 
-    // frameId와 타임스탬프 추가 (4 + 4(패딩) + 8 = 16 bytes)
+    // 41-43: position (3 floats)
+    floatView.set(data.position, 41);
+
+    // 44-46: target (3 floats)
+    floatView.set(data.target, 44);
+
+    // 47-49: up (3 floats)
+    floatView.set(data.up, 47);
+
+    // 50-55: reserved (6 floats) - automatically zero-initialized
+
+    // Metadata views
+    const frameIdView = new Uint32Array(finalBuffer, 224, 1);
+    const timestampView = new Float64Array(finalBuffer, 232, 1);
+    const timeIndexView = new Float32Array(finalBuffer, 240, 1);
+
     const timestamp = performance.timeOrigin + performance.now();
     const frameId = data.frameId || 0;
 
-    // 최종 버퍼 생성 (128 + 16 = 144 bytes, 8바이트 정렬을 위해 패딩 추가)
-    const finalBuffer = new ArrayBuffer(160);
-    const floatView = new Float32Array(finalBuffer, 0, 32);
-    const frameIdView = new Uint32Array(finalBuffer, 128, 1);
-    // 132는 8의 배수가 아니므로 136으로 조정 (8바이트 정렬)
-    const timestampView = new Float64Array(finalBuffer, 136, 1);
-    const timeIndexView = new Float32Array(finalBuffer, 144, 1);
-
-
-    floatView.set(dv);
     frameIdView[0] = frameId;
     timestampView[0] = timestamp;
     timeIndexView[0] = (typeof data.timeIndex === 'number' && !isNaN(data.timeIndex)) ? data.timeIndex : 0.0;
 
     ws.send(finalBuffer);
+
+    // Log first few frames to verify sending
+    if (frameId <= 3 || frameId % 60 === 0) {
+        console.log(`[Worker] Sent camera frame ${frameId} to server (260 bytes, protocol v3)`);
+    }
 }
 
 function sendPing(clientTime: number) {
@@ -331,6 +377,27 @@ function sendPing(clientTime: number) {
     typeView[0] = 255; // ping message type
     timeView[0] = clientTime;
 
+    ws.send(buffer);
+}
+
+function sendEncoderChange(encoderType: number) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.error('[Worker] Cannot send encoder change: WebSocket not open');
+        return;
+    }
+
+    // Control message: magic(4) + command(4) + param(4) = 12 bytes
+    const buffer = new ArrayBuffer(12);
+    const view = new DataView(buffer);
+
+    const MAGIC = 0xDEADBEEF;
+    const CONTROL_CMD_CHANGE_ENCODER = 2;
+
+    view.setUint32(0, MAGIC, true);                        // magic (little-endian)
+    view.setUint32(4, CONTROL_CMD_CHANGE_ENCODER, true);   // command
+    view.setUint32(8, encoderType, true);                  // param (0=JPEG, 1=H264)
+
+    console.log(`[Worker] Sending encoder change control message: type=${encoderType} (0=JPEG, 1=H264)`);
     ws.send(buffer);
 }
 
@@ -489,6 +556,13 @@ async function initWebSocket(wsURL: string) {
         const arrBuf = e.data as ArrayBuffer;
         const clientReceiveTime = performance.now();
 
+        // Log first few messages to verify reception
+        if (!ws['_messageCount']) ws['_messageCount'] = 0;
+        ws['_messageCount']++;
+        if (ws['_messageCount'] <= 3 || ws['_messageCount'] % 60 === 0) {
+            console.log(`[Worker] ws.onmessage #${ws['_messageCount']}: ${arrBuf.byteLength} bytes`);
+        }
+
         // Ping response 처리 (type(1) + padding(7) + clientTime(8) + serverTime(8) = 24 bytes)
         if (arrBuf.byteLength === 24) {
             const dv = new DataView(arrBuf);
@@ -508,10 +582,18 @@ async function initWebSocket(wsURL: string) {
             }
         }
 
+        // Debug: Log jpegFallback state every 60 frames
+        const shouldLogState = (arrBuf.byteLength % 60 === 0);
+        if (shouldLogState) {
+            console.log(`[Worker] jpegFallback=${jpegFallback}, message size=${arrBuf.byteLength}`);
+        }
+
         if (jpegFallback) {
+            console.log(`[Worker] Parsing as JPEG (jpegFallback=${jpegFallback})`);
             const parseResult = parseJPEGMessage(arrBuf);
             if (!parseResult) {
-                debug.error("Failed to parse JPEG message");
+                // Format mismatch: expected JPEG, got H264 (Backend transition pending)
+                console.warn("[Worker] Expected JPEG format, received H264 - Backend encoder transition pending, skipping frame");
                 return;
             }
 
@@ -552,13 +634,21 @@ async function initWebSocket(wsURL: string) {
                 decodeStart = now;
             }
         } else {
+            console.log(`[Worker] Parsing as H264 (jpegFallback=${jpegFallback}), size=${arrBuf.byteLength}`);
             const parseResult = parseH264Message(arrBuf);
             if (!parseResult) {
-                debug.error("Failed to parse H264 message");
+                // Format mismatch: expected H264, got JPEG (Backend transition pending)
+                console.error("[Worker] ❌ Expected H264 format, received JPEG - Backend encoder transition pending, skipping frame");
+                console.error("[Worker] Message size:", arrBuf.byteLength, "bytes");
                 return;
             }
 
             const { frameId, videoData, serverTimestamps } = parseResult;
+
+            // Log first few frames to verify H264 decoding
+            if (frameId <= 3 || frameId % 60 === 0) {
+                console.log(`[Worker] Parsed H264 frame ${frameId}: video=${videoData.byteLength} bytes`);
+            }
 
             // 레이턴시 추적 정보 전달
             self.postMessage({
@@ -643,7 +733,7 @@ async function handleFrame(frame: VideoFrame) {
     frame.close();
 
     self.postMessage({
-        type: 'frame',
+        type: 'video-frame',
         frameId,
         image: colorBitmap,
         depth: depthBitmap,

@@ -1,0 +1,97 @@
+version: '3.8'
+
+# Common configuration for all renderer services
+x-renderer-common: &renderer-common
+  stdin_open: true
+  tty: true
+  ipc: host
+  shm_size: 16g
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ['0']
+            capabilities: [gpu]
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=0
+    - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+  volumes:
+    - ./research:/workspace/research
+    - ./backend:/workspace/backend
+    - /run/ipc:/run/ipc
+  restart: unless-stopped
+
+services:
+  # ========================================
+  # Renderer Services (Multi-Renderer Support)
+  # ========================================
+
+  # 3DGStream Renderer
+  renderer-3dgstream:
+    <<: *renderer-common
+    build:
+      context: ./research/3DGStream
+      dockerfile: Dockerfile
+    image: 3dgstream:latest
+    container_name: renderer-3dgstream
+    working_dir: /workspace/research/3DGStream
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - RENDERER_SOCKET_PATH=/run/ipc/renderer-3dgstream.sock
+
+  # Future: 4DGaussians Renderer
+  # renderer-4dgaussians:
+  #   <<: *renderer-common
+  #   build:
+  #     context: ./research/4DGaussians
+  #     dockerfile: Dockerfile
+  #   image: 4dgaussians:latest
+  #   container_name: renderer-4dgaussians
+  #   working_dir: /workspace/research/4DGaussians
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=0
+  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+  #     - RENDERER_SOCKET_PATH=/run/ipc/renderer-4dgaussians.sock
+
+  # Future: Custom NeRF Renderer
+  # renderer-nerf:
+  #   <<: *renderer-common
+  #   build:
+  #     context: ./research/nerf-renderer
+  #     dockerfile: Dockerfile
+  #   image: nerf-renderer:latest
+  #   container_name: renderer-nerf
+  #   working_dir: /workspace/research/nerf-renderer
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=0
+  #     - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+  #     - RENDERER_SOCKET_PATH=/run/ipc/renderer-nerf.sock
+
+  # ========================================
+  # Transport Service
+  # ========================================
+
+  transport-service:
+    image: python:3.11.13
+    container_name: transport-service
+    stdin_open: true
+    tty: true
+    ipc: host
+    shm_size: 16g
+
+    ports:
+      - "8765:8765"
+
+    volumes:
+      - ./research:/workspace/research
+      - ./backend:/workspace/backend
+      - /run/ipc:/run/ipc
+
+    working_dir: /workspace/backend
+
+    environment:
+      - DEFAULT_RENDERER_SOCKET=/run/ipc/renderer-3dgstream.sock
+
+    restart: unless-stopped
