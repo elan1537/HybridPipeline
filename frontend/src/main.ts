@@ -172,43 +172,28 @@ function updateShaderUniforms() {
 }
 
 // 새로운 해상도로 WebSocket 재연결
+// Phase 6: All WebSocket communication goes through WebSocketSystem
 function reconnectWithNewResolution() {
     debug.logMain('[reconnectWithNewResolution] Reconnecting with new resolution...');
 
-    // 기존 연결 종료
-    worker.postMessage({ type: 'ws-close' });
-
-    // Disconnect WebSocket
-    if (app) {
-        app.disconnectWebSocket();
+    if (!app) {
+        debug.warn('[reconnectWithNewResolution] Application not initialized');
+        return;
     }
 
-    // 잠시 대기 후 새 해상도로 재연결
-    setTimeout(() => {
-        const isJpegMode = uiSystem?.control.isJpegMode() ?? false;
-        const wsURL = isJpegMode ?
-            'wss://' + location.host + '/ws/jpeg' :
-            'wss://' + location.host + '/ws/h264';
+    const wsSystem = app.getWebSocketSystem();
+    if (!wsSystem) {
+        debug.warn('[reconnectWithNewResolution] WebSocketSystem not available');
+        return;
+    }
 
-        // Legacy worker reconnection
-        worker.postMessage({
-            type: 'change',
-            wsURL: wsURL,
-            width: rtWidth,
-            height: rtHeight
-        });
+    const isJpegMode = uiSystem?.control.isJpegMode() ?? false;
+    const wsURL = isJpegMode ?
+        'wss://' + location.host + '/ws/jpeg' :
+        'wss://' + location.host + '/ws/h264';
 
-        // Reconnect new architecture
-        if (app) {
-            debug.logMain(`[Reconnect] New architecture with ${rtWidth}×${rtHeight}`);
-            const wsSystem = app.getWebSocketSystem();
-            if (wsSystem) {
-                wsSystem.reconnect(wsURL, rtWidth, rtHeight);
-            }
-        }
-
-        debug.logMain(`[reconnectWithNewResolution] Reconnected with ${rtWidth}×${rtHeight}`);
-    }, 100);
+    debug.logMain(`[reconnectWithNewResolution] Reconnecting with ${rtWidth}×${rtHeight}`);
+    wsSystem.reconnect(wsURL, rtWidth, rtHeight);
 }
 
 // Camera configuration - centralized
@@ -221,32 +206,7 @@ const cameraConfig = {
 };
 
 let canvas: HTMLCanvasElement;
-let worker = new Worker(new URL("./decode-worker.ts", import.meta.url), { type: "module" })
-
-// Worker error handler
-worker.onerror = (error) => {
-    console.error('[Worker ERROR]', error);
-    debug.error('[Worker] Error:', error.message);
-};
-
-// 워커 초기화는 initScene에서 수행하도록 변경
-
-// Worker message handler - simplified, all processing delegated to WebSocketSystem
-worker.onmessage = ({ data }) => {
-    if (data.type === 'error') {
-        debug.error("decode-worker error: ", data.error);
-        return;
-    }
-
-    // Forward all messages to WebSocketSystem
-    // WebSocketSystem handles frame processing and calls callbacks for UI/latency tracking
-    if (app) {
-        const wsSystem = app.getWebSocketSystem();
-        if (wsSystem) {
-            wsSystem.handleMessage(data);
-        }
-    }
-}
+// Phase 6: Worker is created internally by WebSocketSystem - no longer needed in main.ts
 
 async function initScene() {
     debug.logMain("Initializing scene")
@@ -302,28 +262,8 @@ async function initScene() {
     // robot_setup();
     object_setup();
 
-
-    // 워커 초기화 (선택된 해상도로)
-    // Note: JPEG mode is determined by UISystem, but at this point UISystem is not yet initialized
-    // So we use default H.264 mode here, and it will be changed later if needed
-    const initialIsJpegMode = false; // Will be set correctly after UISystem initialization
-    if (initialIsJpegMode) {
-        worker.postMessage({
-            type: 'init',
-            width: rtWidth,
-            height: rtHeight,
-            wsURL: 'wss://' + location.host + '/ws/jpeg',
-        })
-    } else {
-        worker.postMessage({
-            type: 'init',
-            width: rtWidth,
-            height: rtHeight,
-            wsURL: 'wss://' + location.host + '/ws/h264'
-        })
-    }
-
-    debug.logMain(`[initScene] Initialized WebSocket with resolution: ${rtWidth}×${rtHeight}`);
+    // Phase 6: Initial WebSocket connection is deferred to after Application initialization
+    // Connection will be established via WebSocketSystem.connect() in initScene().then()
 
     // 윈도우 리사이즈 이벤트 리스너 추가
     window.addEventListener('resize', () => {
@@ -482,13 +422,12 @@ initScene().then(async () => {
             cameraConfig: cameraConfig, // Pass camera configuration
         });
 
-        // Wrap existing objects with existing worker
+        // Wrap existing objects - worker is created internally by WebSocketSystem
         await app.initializeWithExistingObjects(
             localScene,
             camera,
             renderer,
-            controls,
-            worker
+            controls
         );
 
         debug.logMain('[Init] Application initialized successfully');
@@ -551,6 +490,12 @@ initScene().then(async () => {
                 },
             });
             debug.logMain('[Init] WebSocketSystem callbacks configured');
+
+            // Phase 6: Initial WebSocket connection (moved from initScene)
+            // Default to H.264 mode; UISystem will reconnect if JPEG mode is selected later
+            const initialWsURL = 'wss://' + location.host + '/ws/h264';
+            wsSystem.connect(initialWsURL, rtWidth, rtHeight);
+            debug.logMain(`[Init] Initial WebSocket connection started with ${rtWidth}×${rtHeight}`);
         }
 
         // Register shader materials with RenderingContext
