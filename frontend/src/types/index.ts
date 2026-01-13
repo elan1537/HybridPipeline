@@ -112,27 +112,6 @@ export interface SystemContext {
 // ============================================================================
 
 /**
- * Performance statistics
- */
-export interface PerformanceStats {
-  fps: number;
-  frameTime: number;
-  renderTime: number;
-  networkLatency: number;
-  memoryUsage?: number;
-}
-
-/**
- * Debug options
- */
-export interface DebugOptions {
-  showStats: boolean;
-  showDepthMap: boolean;
-  showWireframe: boolean;
-  logPerformance: boolean;
-}
-
-/**
  * Camera state for transitions
  */
 export interface CameraState {
@@ -178,7 +157,6 @@ export interface AppEvents {
 
   // UI events
   "ui:mode-changed": { mode: RenderMode };
-  "ui:debug-toggled": { option: keyof DebugOptions; value: boolean };
 }
 
 /**

@@ -7,12 +7,9 @@ import { uiController } from './ui-controller';
 import { debug } from './debug-logger';
 import { CameraStateManager } from './ui/managers/CameraStateManager';
 
-// CP4: New modular architecture (runs in parallel with legacy code)
 import { Application } from './core/Application';
 import { RenderMode as NewRenderMode } from './types';
 import { UISystem } from './systems/UISystem';
-
-// Feature flags removed - new architecture is now the default
 
 import fusionVertexShader from './shaders/fusionVertexShader.vs?raw';
 import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
@@ -113,22 +110,6 @@ const clock = new THREE.Clock();
 // 레이턴시 추적기
 const latencyTracker = new LatencyTracker();
 
-// Legacy UI variables removed - now managed by UISystem
-
-// Render mode constants removed - now using RenderMode from types/index.ts
-
-// Legacy variables removed:
-// - currentTimeIndex, frameCounter, isPlaying: now managed by Application.timeController
-// - Recording variables: now managed by RecordingPanel
-// - Texture update tracking: now handled by TextureManager
-// - Performance tracking: removed
-// - Frame processing and FPS: now handled by LatencyTracker
-
-// Legacy event listeners and functions removed - now managed by UISystem
-// Legacy depth texture management removed - now managed by TextureManager
-
-// Legacy camera and recording event listeners removed - now managed by UISystem
-
 // 모든 렌더 타겟과 텍스처 재생성 (해상도 변경 시)
 function recreateRenderTargets() {
     debug.logMain(`[recreateRenderTargets] Recreating for resolution: ${rtWidth}×${rtHeight}`);
@@ -190,9 +171,6 @@ function updateShaderUniforms() {
     }
 }
 
-// updateCameraAspectRatio() removed - camera aspect ratio is managed automatically by RenderingContext
-// updateSizeDisplays() removed - UI displays are managed by UISystem
-
 // 새로운 해상도로 WebSocket 재연결
 function reconnectWithNewResolution() {
     debug.logMain('[reconnectWithNewResolution] Reconnecting with new resolution...');
@@ -233,45 +211,6 @@ function reconnectWithNewResolution() {
     }, 100);
 }
 
-// 기존 로컬 렌더 타겟 재생성 (호환성 유지)
-function recreateLocalRenderTarget() {
-    if (localRenderTarget) {
-        localRenderTarget.dispose();
-    }
-    if (localDepthTexture) {
-        localDepthTexture.dispose();
-    }
-
-    localDepthTexture = new THREE.DepthTexture(rtWidth, rtHeight);
-    localDepthTexture.type = THREE.FloatType;
-
-    localRenderTarget = new THREE.WebGLRenderTarget(rtWidth, rtHeight, {
-        depthBuffer: true,
-        stencilBuffer: false,
-        depthTexture: localDepthTexture,
-        samples: 4,
-    });
-
-    // 셰이더 유니폼 업데이트
-    if (fusionMaterial) {
-        fusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
-        fusionMaterial.uniforms.localDepthSampler.value = localDepthTexture;
-    }
-    if (debugMaterial) {
-        debugMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
-        debugMaterial.uniforms.localDepthSampler.value = localDepthTexture;
-    }
-    if (localOnlyMaterial) {
-        localOnlyMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
-    }
-    if (depthFusionMaterial) {
-        depthFusionMaterial.uniforms.localColorSampler.value = localRenderTarget.texture;
-        depthFusionMaterial.uniforms.localDepthSampler.value = localDepthTexture;
-    }
-}
-
-
-
 // Camera configuration - centralized
 const cameraConfig = {
     fov: 80,
@@ -281,14 +220,8 @@ const cameraConfig = {
     target: new THREE.Vector3(0, 0, 0)
 };
 
-// renderStart, renderCnt removed - FPS tracking now in LatencyTracker
-
 let canvas: HTMLCanvasElement;
-
-// CameraBuffer interface removed - not used
-
 let worker = new Worker(new URL("./decode-worker.ts", import.meta.url), { type: "module" })
-// workerReady removed - WebSocketSystem handles connection state
 
 // Worker error handler
 worker.onerror = (error) => {
@@ -313,7 +246,6 @@ worker.onmessage = ({ data }) => {
     }
 
     if (data.type === "ws-ready") {
-        // workerReady state tracking removed - WebSocketSystem handles this
         if (uiSystem) {
             uiSystem.setConnectionState('connected');
         }
@@ -321,7 +253,6 @@ worker.onmessage = ({ data }) => {
     }
 
     if (data.type === "ws-error") {
-        // workerReady removed - state handled by WebSocketSystem
         if (uiSystem) {
             uiSystem.setConnectionState('error');
         }
@@ -329,7 +260,6 @@ worker.onmessage = ({ data }) => {
     }
 
     if (data.type === "ws-close") {
-        // workerReady removed - state handled by WebSocketSystem
         if (uiSystem) {
             uiSystem.setConnectionState('closed');
         }
@@ -392,18 +322,10 @@ worker.onmessage = ({ data }) => {
         );
     }
 
-    if (data.type === 'fps') {
-        // Legacy FPS display removed - now handled by 'pure-decode-stats' message type
-    }
-
     if (data.type === 'error') {
         debug.error("decode-worker error: ", data.error)
     }
 }
-
-// Legacy button handler functions removed - now managed by UISystem
-
-// Legacy FPS test functions removed - now handled by UISystem and FPSTestPanel
 
 async function initScene() {
     debug.logMain("Initializing scene")
@@ -419,12 +341,7 @@ async function initScene() {
     debug.logMain(`[initScene] Camera aspect ratio: ${windowAspect.toFixed(3)} (${rtWidth}×${rtHeight})`);
     debug.logMain(`[initScene] Camera config: fov=${cameraConfig.fov}, near=${cameraConfig.near}, far=${cameraConfig.far}`);
 
-    // Set camera position from config
-    camera.position.copy(cameraConfig.position);;
-    // camera.lookAt(
-    //     // new THREE.Vector3().fromArray([-0.77, 0.43, 0.95])
-    //     new THREE.Vector3().fromArray([0.0, 0.0, 0.0])
-    // );
+    camera.position.copy(cameraConfig.position);
 
     localScene = new THREE.Scene();
     SceneState.scene = localScene;
@@ -455,8 +372,6 @@ async function initScene() {
 
     // Auto-load saved camera position if available
     CameraStateManager.load(camera, controls);
-
-    // UI displays initialization removed - now handled by UISystem
 
     canvas = renderer.domElement as HTMLCanvasElement
 
@@ -514,8 +429,6 @@ async function initScene() {
         reconnectWithNewResolution();
 
         debug.logMain(`[Window Resize] Updated to ${rtWidth}×${rtHeight}, aspect: ${camera.aspect.toFixed(3)}`);
-
-        // UI displays update removed - UISystem handles this automatically
     });
 
     localDepthTexture = new THREE.DepthTexture(rtWidth, rtHeight);
@@ -527,10 +440,6 @@ async function initScene() {
         depthTexture: localDepthTexture,
         samples: 4,
     });
-
-    // wsColorTexture and wsDepthTexture initialization removed
-    // TextureManager creates and manages both textures
-    // Shader materials will have wsColorSampler and wsDepthSampler set by TextureManager after initialization
 
     debugMaterial = new THREE.ShaderMaterial({
         uniforms: {
@@ -628,20 +537,13 @@ async function initScene() {
     depthFusionScene = new THREE.Scene();
     depthFusionScene.add(depthFusionQuad);
     depthFusionCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-
-    // Recording compatibility check removed - now handled by RecordingPanel
 }
-
-
-// sendCameraSnapshot removed - now handled by Application.sendCameraFrame() via CameraController
 
 // Application instance
 let app: Application | null = null;
 let uiSystem: UISystem | null = null;
 
 initScene().then(async () => {
-    // renderStart removed - FPS tracking now in LatencyTracker
-
     // UI 컨트롤러 활성화
     debug.logMain('UI Controller initialized:', uiController.isVisible())
 
@@ -737,13 +639,8 @@ initScene().then(async () => {
                 clock,
                 // Camera update callback - sends data to server
                 onCameraUpdate: () => {
-                    console.log('[main.ts] onCameraUpdate callback called, app=', !!app);
-                    // sendCameraSnapshot removed - app.sendCameraFrame() handles this via CameraController
                     if (app) {
-                        console.log('[main.ts] Calling app.sendCameraFrame()');
                         app.sendCameraFrame();
-                    } else {
-                        console.error('[main.ts] app is null/undefined!');
                     }
                 },
                 // Per-frame update callback
@@ -757,46 +654,9 @@ initScene().then(async () => {
                     robot_animation();
                     updateLatencyStats();
                     uiSystem!.updateFPSTestUI();
-                    // Camera debug info now updated via DebugPanel.updateCameraInfo()
                 },
             });
             debug.logMain('[Init] RenderingSystem configured');
-        }
-
-        // Configure PhysicsSystem (optional - for testing collision detection)
-        const physicsSystem = app.getPhysicsSystem();
-        if (physicsSystem && true) { // Set to true to enable physics test
-            debug.logMain('[Init] Configuring PhysicsSystem...');
-
-            // Example: Create a test sphere that falls and collides with Gaussian scene
-            const testSphere = new THREE.Mesh(
-                new THREE.SphereGeometry(0.5, 32, 32),
-                new THREE.MeshStandardMaterial({
-                    color: 0xff0000,
-                    metalness: 0.5,
-                    roughness: 0.5
-                })
-            );
-            testSphere.position.set(0, 0.3, -3.2); // Start high above ground
-            testSphere.castShadow = true;
-            localScene.add(testSphere);
-
-            // Add to physics with gravity
-            app.addPhysicsMesh(testSphere, {
-                velocity: new THREE.Vector3(0, 0, 0),
-                acceleration: new THREE.Vector3(0, -9.8, 0), // Gravity
-                mass: 1.0,
-                restitution: 0.7, // 70% bounce
-                friction: 0.3     // 30% friction
-            });
-
-            // Set collision response type
-            app.setPhysicsResponseType("stop"); // Options: "stop", "bounce", "slide"
-
-            // Adjust collision threshold (5cm tolerance)
-            app.setCollisionEpsilon(0.05);
-
-            debug.logMain('[Init] PhysicsSystem configured with test sphere');
         }
 
         // Start the render loop
@@ -808,12 +668,6 @@ initScene().then(async () => {
     }
 })
 
-
-
-// getCameraIntrinsics removed - now handled by CameraController.getCameraIntrinsics()
-
-// Legacy stats update throttling removed - now handled by UISystem if needed
-
 function updateLatencyStats() {
     if (!uiSystem) return;
 
@@ -823,13 +677,6 @@ function updateLatencyStats() {
     // Delegate to UISystem
     uiSystem.updateLatencyStats(stats, clockOffset);
 }
-
-// updateFPSTestUI and updateCameraDebugInfo removed - now handled by UISystem
-
-// downloadFPSResults and generateFPSReportText removed - now handled by FPSTestPanel
-
-// Legacy recording and frame processing functions removed - now handled by RecordingPanel
-// Note: Frame processing metrics are now tracked differently via LatencyTracker
 
 // ============================================================================
 // Camera Configuration Helpers (for console debugging)

@@ -12,9 +12,7 @@ import { System, SystemContext, ApplicationConfig, RenderMode } from "../types";
 import { WebSocketSystem } from "../systems/WebSocketSystem";
 import { TextureManager } from "../systems/TextureManager";
 import { CameraController } from "../systems/CameraController";
-import { DebugSystem } from "../systems/DebugSystem";
 import { RenderingSystem } from "../systems/RenderingSystem";
-import { PhysicsSystem, CollisionResponseType } from "../systems/PhysicsSystem";
 
 export class Application {
   // Core components
@@ -27,9 +25,7 @@ export class Application {
   private websocketSystem: WebSocketSystem | null = null;
   private textureManager: TextureManager | null = null;
   private cameraController: CameraController | null = null;
-  private debugSystem: DebugSystem | null = null;
   private renderingSystem: RenderingSystem | null = null;
-  private physicsSystem: PhysicsSystem | null = null;
 
   // Render loop
   private clock: THREE.Clock = new THREE.Clock();
@@ -87,17 +83,13 @@ export class Application {
     this.websocketSystem = new WebSocketSystem();
     this.textureManager = new TextureManager();
     this.cameraController = new CameraController();
-    this.debugSystem = new DebugSystem();
     this.renderingSystem = new RenderingSystem();
-    this.physicsSystem = new PhysicsSystem();
 
     // Register systems
     this.systems.set("websocket", this.websocketSystem);
     this.systems.set("texture", this.textureManager);
     this.systems.set("camera", this.cameraController);
-    this.systems.set("debug", this.debugSystem);
     this.systems.set("rendering", this.renderingSystem);
-    this.systems.set("physics", this.physicsSystem);
 
     // Set existing worker before initialization
     if (existingWorker && this.websocketSystem) {
@@ -153,12 +145,12 @@ export class Application {
     this.websocketSystem = new WebSocketSystem();
     this.textureManager = new TextureManager();
     this.cameraController = new CameraController();
-    this.debugSystem = new DebugSystem();
+    this.renderingSystem = new RenderingSystem();
 
     this.systems.set("websocket", this.websocketSystem);
     this.systems.set("texture", this.textureManager);
     this.systems.set("camera", this.cameraController);
-    this.systems.set("debug", this.debugSystem);
+    this.systems.set("rendering", this.renderingSystem);
 
     await Promise.all(
       Array.from(this.systems.values()).map((system) => system.initialize(context))
@@ -393,31 +385,10 @@ export class Application {
     }
 
     this.cameraController.updateCameraParams(params);
-
-    // PhysicsSystem will automatically pick up the new values on next update
-    if (this.physicsSystem) {
-      const camera = this.cameraController.getCamera();
-      if (camera) {
-        console.log("[Application] Updating PhysicsSystem with new camera params");
-        // PhysicsSystem needs to update its collision detector
-        const collisionDetector = (this.physicsSystem as any).collisionDetector;
-        if (collisionDetector) {
-          collisionDetector.updateClippingPlanes(camera.near, camera.far);
-        }
-      }
-    }
-  }
-
-  getDebugSystem(): DebugSystem | null {
-    return this.debugSystem;
   }
 
   getRenderingSystem(): RenderingSystem | null {
     return this.renderingSystem;
-  }
-
-  getPhysicsSystem(): PhysicsSystem | null {
-    return this.physicsSystem;
   }
 
   getRenderingContext(): RenderingContext | null {
@@ -430,92 +401,6 @@ export class Application {
 
   getState(): ApplicationState {
     return this.state;
-  }
-
-  // ========================================================================
-  // Physics API
-  // ========================================================================
-
-  /**
-   * Add a mesh to physics simulation
-   *
-   * @param mesh - Three.js mesh to add
-   * @param options - Physics properties (velocity, acceleration, mass, etc.)
-   * @returns PhysicsMesh object for direct manipulation
-   */
-  addPhysicsMesh(mesh: THREE.Mesh, options?: {
-    velocity?: THREE.Vector3;
-    acceleration?: THREE.Vector3;
-    mass?: number;
-    restitution?: number;
-    friction?: number;
-  }) {
-    if (!this.physicsSystem) {
-      console.warn("[Application] PhysicsSystem not available");
-      return null;
-    }
-
-    return this.physicsSystem.addMesh(mesh, options);
-  }
-
-  /**
-   * Remove a mesh from physics simulation
-   */
-  removePhysicsMesh(mesh: THREE.Mesh): boolean {
-    if (!this.physicsSystem) {
-      console.warn("[Application] PhysicsSystem not available");
-      return false;
-    }
-
-    return this.physicsSystem.removeMesh(mesh);
-  }
-
-  /**
-   * Set collision response type for all physics objects
-   *
-   * @param type - "stop" | "bounce" | "slide"
-   */
-  setPhysicsResponseType(type: "stop" | "bounce" | "slide"): void {
-    if (!this.physicsSystem) {
-      console.warn("[Application] PhysicsSystem not available");
-      return;
-    }
-
-    switch (type) {
-      case "stop":
-        this.physicsSystem.setResponseType(CollisionResponseType.Stop);
-        break;
-      case "bounce":
-        this.physicsSystem.setResponseType(CollisionResponseType.Bounce);
-        break;
-      case "slide":
-        this.physicsSystem.setResponseType(CollisionResponseType.Slide);
-        break;
-    }
-  }
-
-  /**
-   * Set global gravity
-   */
-  setGravity(gravity: THREE.Vector3): void {
-    if (!this.physicsSystem) {
-      console.warn("[Application] PhysicsSystem not available");
-      return;
-    }
-
-    this.physicsSystem.setGravity(gravity);
-  }
-
-  /**
-   * Set collision detection threshold (in meters)
-   */
-  setCollisionEpsilon(epsilon: number): void {
-    if (!this.physicsSystem) {
-      console.warn("[Application] PhysicsSystem not available");
-      return;
-    }
-
-    this.physicsSystem.setCollisionEpsilon(epsilon);
   }
 
   // ========================================================================
