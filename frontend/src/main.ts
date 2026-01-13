@@ -16,39 +16,8 @@ import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
 import debugVertexShader from './shaders/debugVertexShader.vs?raw';
 import debugFragmentShader from './shaders/debugColorShader.fs?raw';
 import depthFusionFragmentShader from './shaders/depthFusionShader.fs?raw';
-
-// Simple shader for displaying WebSocket color texture only (based on fusionColorShader)
-// Uses same UV convention and colorspace as Fusion for consistency
-const gaussianOnlyFragmentShader = `
-  varying vec2 vUv;
-  uniform sampler2D wsColorSampler;
-
-  void main() {
-    // Same final UV as fusionColorShader (after both flips cancel out X-axis)
-    // fusionFlipX=true + wsFlipX=true results in: vec2(vUv.x, 1.0 - vUv.y)
-    vec2 wsUv = vec2(vUv.x, 1.0 - vUv.y);
-    vec4 wsColor = texture2D(wsColorSampler, wsUv);
-
-    // Use same colorspace conversion as Fusion
-    gl_FragColor = linearToOutputTexel(wsColor);
-  }
-`;
-
-// Simple shader for displaying local color texture only (for LOCAL_ONLY mode)
-// Uses same UV flip and colorspace as Fusion for consistency
-const localOnlyFragmentShader = `
-  varying vec2 vUv;
-  uniform sampler2D localColorSampler;
-
-  void main() {
-    // Same X-axis flip as Fusion (when fusionFlipX=true: currentUv.x = 1.0 - vUv.x)
-    vec2 localUv = vec2(1.0 - vUv.x, vUv.y);
-    vec4 localColor = texture2D(localColorSampler, localUv);
-
-    // Use same colorspace conversion as Fusion
-    gl_FragColor = linearToOutputTexel(localColor);
-  }
-`;
+import gaussianOnlyFragmentShader from './shaders/gaussianOnlyShader.fs?raw';
+import localOnlyFragmentShader from './shaders/localOnlyShader.fs?raw';
 
 // Window-based resolution management
 let rescaleFactor = 0.8;
