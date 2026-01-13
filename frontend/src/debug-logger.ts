@@ -38,31 +38,7 @@ export class DebugLogger {
             console.error(`[DEBUG ERROR] ${message}`, ...args);
         }
     }
-    
-    static group(label: string): void {
-        if (this.debugEnabled) {
-            console.group(`[DEBUG] ${label}`);
-        }
-    }
-    
-    static groupEnd(): void {
-        if (this.debugEnabled) {
-            console.groupEnd();
-        }
-    }
-    
-    static time(label: string): void {
-        if (this.debugEnabled) {
-            console.time(`[DEBUG] ${label}`);
-        }
-    }
-    
-    static timeEnd(label: string): void {
-        if (this.debugEnabled) {
-            console.timeEnd(`[DEBUG] ${label}`);
-        }
-    }
-    
+
     // Component-specific loggers
     static logMain(message: string, ...args: any[]): void {
         this.log(`[Main] ${message}`, ...args);
@@ -78,14 +54,6 @@ export class DebugLogger {
     
     static logFPS(message: string, ...args: any[]): void {
         this.log(`[FPS] ${message}`, ...args);
-    }
-    
-    static logGPU(message: string, ...args: any[]): void {
-        this.log(`[GPU] ${message}`, ...args);
-    }
-    
-    static logNetwork(message: string, ...args: any[]): void {
-        this.log(`[Network] ${message}`, ...args);
     }
 }
 
