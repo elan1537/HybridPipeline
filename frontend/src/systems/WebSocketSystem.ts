@@ -57,15 +57,40 @@ export class WebSocketSystem implements System {
 
   /**
    * Set existing worker to reuse (Phase 1 compatibility)
+   * Phase 6: Also sets up message handlers internally
    */
   setWorker(worker: Worker): void {
     this.worker = worker;
     this.isUsingExistingWorker = true;
-    console.log("[WebSocketSystem] Using existing worker");
+    this.setupWorkerHandlers();
+    console.log("[WebSocketSystem] Using existing worker with handlers configured");
   }
 
   /**
-   * Handle worker message (called from main.ts worker.onmessage)
+   * Set up worker message and error handlers
+   * Phase 6: Centralized handler setup
+   */
+  private setupWorkerHandlers(): void {
+    if (!this.worker) return;
+
+    this.worker.onmessage = ({ data }) => {
+      if (data.type === 'error') {
+        console.error("[WebSocketSystem] Worker error:", data.error);
+        return;
+      }
+      this.handleWorkerMessage({ data } as MessageEvent);
+    };
+
+    this.worker.onerror = (error) => {
+      console.error('[WebSocketSystem] Worker ERROR:', error);
+    };
+
+    console.log("[WebSocketSystem] Worker handlers configured");
+  }
+
+  /**
+   * Handle worker message (kept for backward compatibility, but no longer needed externally)
+   * @deprecated Use setWorker() which sets up handlers automatically
    */
   handleMessage(data: any): void {
     this.handleWorkerMessage({ data } as MessageEvent);
@@ -79,7 +104,8 @@ export class WebSocketSystem implements System {
       this.worker = new Worker(new URL("../decode-worker.ts", import.meta.url), {
         type: "module",
       });
-      console.log("[WebSocketSystem] Created new worker");
+      this.setupWorkerHandlers();
+      console.log("[WebSocketSystem] Created new worker with handlers");
     }
 
     // Subscribe to state changes
