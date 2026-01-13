@@ -124,18 +124,24 @@ export class TextureManager implements System {
    * Update textures from video frame
    */
   updateFromVideoFrame(frame: VideoFrame): void {
-    console.log("[TextureManager] updateFromVideoFrame called:", frame.frameId, frame.width, 'x', frame.height, {
-      hasColorBitmap: !!frame.colorBitmap,
-      hasDepthBitmap: !!frame.depthBitmap,
-      hasDepthRaw: !!frame.depthRaw,
-      hasColorData: !!frame.colorData,
-      hasDepthData: !!frame.depthData
-    });
+    // Debug: Log frame data with depth details
+    const depthInfo = frame.depthRaw
+      ? `depthRaw[${frame.depthRaw.length}]`
+      : frame.depthBitmap
+        ? `depthBitmap[${frame.depthBitmap.width}x${frame.depthBitmap.height}]`
+        : frame.depthData
+          ? `depthData[${frame.depthData.length}]`
+          : 'none';
+
+    console.log(`[TextureManager] updateFromVideoFrame #${frame.frameId}: ${frame.width}x${frame.height}, depth=${depthInfo}, isJpegMode=${this.isJpegMode}`);
 
     if (!this.colorTexture || !this.depthTexture) {
       console.error("[TextureManager] Textures not initialized");
       return;
     }
+
+    // Debug: Verify material uniform references
+    this.verifyMaterialReferences();
 
     // Update color texture
     // Priority 1: Use ImageBitmap (GPU optimized, from decode-worker)
@@ -168,28 +174,57 @@ export class TextureManager implements System {
     // Update depth texture
     // Priority 1: Use raw Float16 data (JPEG mode)
     if (frame.depthRaw) {
-      console.log("[TextureManager] Updating depth texture from depthRaw (Float16), size:", frame.depthRaw.length);
+      console.log("[TextureManager] Updating depth from depthRaw (Float16):", {
+        size: frame.depthRaw.length,
+        textureType: this.depthTexture.type,
+        expectedType: THREE.HalfFloatType,
+        textureId: this.depthTexture.id
+      });
 
       // Verify texture type matches
       if (this.depthTexture.type !== THREE.HalfFloatType) {
         console.warn("[TextureManager] Depth texture type mismatch! Expected HalfFloatType, got", this.depthTexture.type);
+        // Recreate texture with correct type
+        this.setJpegMode(true);
       }
 
       // Copy data into existing array (don't replace reference)
       const currentData = this.depthTexture.image.data as Uint16Array;
       if (currentData.length !== frame.depthRaw.length) {
-        console.warn("[TextureManager] Depth size mismatch:", currentData.length, "vs", frame.depthRaw.length);
+        console.warn("[TextureManager] Depth size mismatch:", currentData.length, "vs", frame.depthRaw.length, "- resizing");
         // Recreate texture with correct size
-        this.depthTexture.image.data = new Uint16Array(frame.depthRaw);
+        const newWidth = Math.sqrt(frame.depthRaw.length);
+        if (Number.isInteger(newWidth) && newWidth !== this.width) {
+          this.resize(newWidth, newWidth);
+        } else {
+          // Just update the data array
+          this.depthTexture.image.data = new Uint16Array(frame.depthRaw);
+          this.depthTexture.image.width = frame.width;
+          this.depthTexture.image.height = frame.height;
+        }
       } else {
         currentData.set(frame.depthRaw);
       }
 
       this.depthTexture.needsUpdate = true;
+      console.log("[TextureManager] Depth texture updated (depthRaw), needsUpdate=true");
     }
     // Priority 2: Use ImageBitmap (H264 mode with depth as ImageBitmap)
     else if (frame.depthBitmap) {
-      console.log("[TextureManager] Updating depth texture from ImageBitmap");
+      console.log("[TextureManager] Updating depth from depthBitmap:", {
+        size: `${frame.depthBitmap.width}x${frame.depthBitmap.height}`,
+        textureType: this.depthTexture.type,
+        expectedType: THREE.UnsignedByteType,
+        textureId: this.depthTexture.id
+      });
+
+      // Verify texture type matches
+      if (this.depthTexture.type !== THREE.UnsignedByteType) {
+        console.warn("[TextureManager] Depth texture type mismatch! Expected UnsignedByteType, got", this.depthTexture.type);
+        // Recreate texture with correct type
+        this.setJpegMode(false);
+      }
+
       // Convert ImageBitmap to canvas for DataTexture
       const canvas = document.createElement("canvas");
       canvas.width = frame.depthBitmap.width;
@@ -207,12 +242,16 @@ export class TextureManager implements System {
         // Copy into existing array
         const currentData = this.depthTexture.image.data as Uint8Array;
         if (currentData.length !== depthArray.length) {
+          console.warn("[TextureManager] Depth size mismatch:", currentData.length, "vs", depthArray.length, "- replacing array");
           this.depthTexture.image.data = depthArray;
+          this.depthTexture.image.width = canvas.width;
+          this.depthTexture.image.height = canvas.height;
         } else {
           currentData.set(depthArray);
         }
 
         this.depthTexture.needsUpdate = true;
+        console.log("[TextureManager] Depth texture updated (depthBitmap), needsUpdate=true");
       }
     }
     // Priority 3: Use converted depth data (fallback)
@@ -305,6 +344,36 @@ export class TextureManager implements System {
         this.updateShaderMaterials();
       }
     }
+  }
+
+  /**
+   * Verify that all material uniforms reference the current textures
+   * Used for debugging texture update issues
+   */
+  private verifyMaterialReferences(): void {
+    if (!this.context || !this.depthTexture) return;
+
+    const renderingContext = this.context.renderingContext;
+    const materialNames = ['debug', 'depthFusion', 'fusion'];
+
+    materialNames.forEach(name => {
+      const material = renderingContext.getMaterial(name);
+      if (material && 'uniforms' in material) {
+        const shaderMaterial = material as THREE.ShaderMaterial;
+        const uniformValue = shaderMaterial.uniforms['wsDepthSampler']?.value;
+        const isSame = uniformValue === this.depthTexture;
+
+        if (!isSame) {
+          console.error(`[TextureManager] ⚠️ ${name} material wsDepthSampler MISMATCH!`, {
+            uniformTextureId: uniformValue?.id,
+            currentDepthTextureId: this.depthTexture?.id
+          });
+          // Auto-fix: Update the uniform reference
+          shaderMaterial.uniforms['wsDepthSampler'].value = this.depthTexture;
+          console.log(`[TextureManager] 🔧 Fixed ${name} material wsDepthSampler reference`);
+        }
+      }
+    });
   }
 
   /**
