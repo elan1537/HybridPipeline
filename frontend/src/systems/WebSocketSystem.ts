@@ -8,6 +8,26 @@ import { System, SystemContext, CameraFrame, VideoFrame, ConnectionState, Format
 export type VideoFrameHandler = (frame: VideoFrame) => void;
 export type ConnectionStateHandler = (state: ConnectionState) => void;
 
+/**
+ * Callbacks for WebSocketSystem events
+ * Used by main.ts to handle UI updates and latency tracking
+ */
+export interface WebSocketSystemCallbacks {
+  onConnectionStateChange?: (state: 'connected' | 'error' | 'closed') => void;
+  onDecodeStats?: (stats: {
+    pureFPS: number;
+    avgDecodeTime: number;
+    minDecodeTime: number;
+    maxDecodeTime: number;
+    recentAvg: number;
+    totalFrames: number;
+    fpsMeasurementData?: { totalCount: number; avgTime: number };
+  }) => void;
+  onFrameReceive?: (frameId: number, serverTimestamps: any) => void;
+  onFrameDecoded?: (frameId: number, decodeCompleteTime: number) => void;
+  onClockSync?: (clientRequestTime: number, serverReceiveTime: number, serverSendTime: number) => void;
+}
+
 export class WebSocketSystem implements System {
   readonly name = "websocket";
 
@@ -22,6 +42,18 @@ export class WebSocketSystem implements System {
   private width: number = 1280;
   private height: number = 720;
   private wsURL: string = "";
+
+  // Callbacks for external event handling
+  private callbacks: WebSocketSystemCallbacks = {};
+
+  /**
+   * Set callbacks for external event handling
+   * Used by main.ts to connect UI updates and latency tracking
+   */
+  setCallbacks(callbacks: WebSocketSystemCallbacks): void {
+    this.callbacks = callbacks;
+    console.log("[WebSocketSystem] Callbacks configured");
+  }
 
   /**
    * Set existing worker to reuse (Phase 1 compatibility)
@@ -267,17 +299,35 @@ export class WebSocketSystem implements System {
 
       case "frame-receive":
         // Frame receive notification (for latency tracking)
-        console.log('[WebSocketSystem] Frame received:', msg.frameId);
+        if (this.callbacks.onFrameReceive) {
+          this.callbacks.onFrameReceive(msg.frameId, msg.serverTimestamps);
+        }
         break;
 
       case "pure-decode-stats":
         // Pure decode statistics (for performance monitoring)
-        console.log('[WebSocketSystem] Pure decode stats:', msg.pureFPS);
+        if (this.callbacks.onDecodeStats) {
+          this.callbacks.onDecodeStats({
+            pureFPS: msg.pureFPS,
+            avgDecodeTime: msg.avgDecodeTime,
+            minDecodeTime: msg.minDecodeTime,
+            maxDecodeTime: msg.maxDecodeTime,
+            recentAvg: msg.recentAvg,
+            totalFrames: msg.totalFrames,
+            fpsMeasurementData: msg.fpsMeasurementData,
+          });
+        }
         break;
 
       case "pong-received":
         // Clock sync pong (for latency tracking)
-        console.log('[WebSocketSystem] Pong received');
+        if (this.callbacks.onClockSync) {
+          this.callbacks.onClockSync(
+            msg.clientRequestTime,
+            msg.serverReceiveTime,
+            msg.serverSendTime
+          );
+        }
         break;
 
       case "decode-fps":
@@ -309,16 +359,25 @@ export class WebSocketSystem implements System {
       case "ws-ready":
         console.log("[WebSocketSystem] Connection ready");
         this.handleConnectionState("open");
+        if (this.callbacks.onConnectionStateChange) {
+          this.callbacks.onConnectionStateChange('connected');
+        }
         break;
 
       case "ws-error":
         console.log("[WebSocketSystem] Connection error");
         this.handleConnectionState("error");
+        if (this.callbacks.onConnectionStateChange) {
+          this.callbacks.onConnectionStateChange('error');
+        }
         break;
 
       case "ws-close":
         console.log("[WebSocketSystem] Connection closed");
         this.handleConnectionState("closed");
+        if (this.callbacks.onConnectionStateChange) {
+          this.callbacks.onConnectionStateChange('closed');
+        }
         break;
 
       default:
@@ -327,6 +386,11 @@ export class WebSocketSystem implements System {
   }
 
   private handleVideoFrame(msg: any): void {
+    // Notify frame decoded callback (for latency tracking)
+    if (msg.frameId && msg.decodeCompleteTime && this.callbacks.onFrameDecoded) {
+      this.callbacks.onFrameDecoded(msg.frameId, msg.decodeCompleteTime);
+    }
+
     console.log("handleVideoFrame")
     // Convert legacy decode-worker 'frame' message to VideoFrame format
     let colorData: Uint8Array | undefined;

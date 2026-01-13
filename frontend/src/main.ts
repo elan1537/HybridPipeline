@@ -231,99 +231,20 @@ worker.onerror = (error) => {
 
 // 워커 초기화는 initScene에서 수행하도록 변경
 
+// Worker message handler - simplified, all processing delegated to WebSocketSystem
 worker.onmessage = ({ data }) => {
-    // Debug: Log all worker messages
-    if (data.type !== 'frame-receive' && data.type !== 'pure-decode-stats') {
-        console.log('[main.ts] Worker message:', data.type);
+    if (data.type === 'error') {
+        debug.error("decode-worker error: ", data.error);
+        return;
     }
 
-    // Forward messages to WebSocketSystem
+    // Forward all messages to WebSocketSystem
+    // WebSocketSystem handles frame processing and calls callbacks for UI/latency tracking
     if (app) {
         const wsSystem = app.getWebSocketSystem();
         if (wsSystem) {
             wsSystem.handleMessage(data);
         }
-    }
-
-    if (data.type === "ws-ready") {
-        if (uiSystem) {
-            uiSystem.setConnectionState('connected');
-        }
-        return;
-    }
-
-    if (data.type === "ws-error") {
-        if (uiSystem) {
-            uiSystem.setConnectionState('error');
-        }
-        return;
-    }
-
-    if (data.type === "ws-close") {
-        if (uiSystem) {
-            uiSystem.setConnectionState('closed');
-        }
-        return;
-    }
-
-    if (data.type === 'pure-decode-stats') {
-        // 순수 디코딩 성능 통계 처리
-        debug.logMain(`[Pure Decode] FPS: ${data.pureFPS.toFixed(2)}, ` +
-            `Avg Time: ${data.avgDecodeTime.toFixed(2)}ms, ` +
-            `Range: ${data.minDecodeTime.toFixed(2)}-${data.maxDecodeTime.toFixed(2)}ms, ` +
-            `Recent Avg: ${data.recentAvg.toFixed(2)}ms`);
-
-        // UI 업데이트 (기존 decode FPS 대신 순수 decode FPS 표시)
-        if (uiSystem) {
-            uiSystem.updateDecodeFPS(data.pureFPS, data.avgDecodeTime);
-        }
-
-        // FPS 측정 중이면 샘플 데이터로 Latency Tracker 업데이트
-        if (data.fpsMeasurementData && latencyTracker.isFPSMeasurementActive()) {
-            latencyTracker.recordPureDecodeFPSSample(data.fpsMeasurementData.totalCount, data.fpsMeasurementData.avgTime);
-            debug.logFPS(`Recording decode sample: ${data.fpsMeasurementData.totalCount} frames, ${data.fpsMeasurementData.avgTime.toFixed(2)}ms avg`);
-        } else {
-            // 평상시에는 1초 단위 데이터 사용 (기존 방식 유지)
-            latencyTracker.recordPureDecodeFPS(data.totalFrames, data.avgDecodeTime);
-        }
-        return;
-    }
-
-    if (data.type === 'frame-receive') {
-        // 서버로부터 프레임 수신 시점 기록
-        latencyTracker.recordFrameReceive(data.frameId, data.serverTimestamps);
-        return;
-    }
-
-    // Legacy 'frame' message handling removed - now handled by WebSocketSystem + TextureManager
-    // All texture updates are managed by TextureManager.updateFromVideoFrame()
-    if (data.type === 'frame' || data.type === 'video-frame') {
-        // 디코딩 완료 시점 기록
-        if (data.frameId && data.decodeCompleteTime) {
-            latencyTracker.recordDecodeComplete(data.frameId);
-
-            // 다음 렌더 프레임에서 렌더링 완료를 기록
-            requestAnimationFrame(() => {
-                const stats = latencyTracker.recordRenderComplete(data.frameId);
-                if (stats) {
-                    // 개별 프레임 레이턴시 로깅 (디버깅용)
-                    // debug.logMain(`Frame ${data.frameId}: ${stats.totalLatency.toFixed(1)}ms total`);
-                }
-            });
-        }
-    }
-
-    if (data.type === 'pong-received') {
-        // 클럭 동기화 데이터 기록
-        latencyTracker.recordClockSync(
-            data.clientRequestTime,
-            data.serverReceiveTime,
-            data.serverSendTime
-        );
-    }
-
-    if (data.type === 'error') {
-        debug.error("decode-worker error: ", data.error)
     }
 }
 
@@ -585,6 +506,52 @@ initScene().then(async () => {
         await uiSystem.initialize(context);
 
         debug.logMain('[Init] UISystem initialized successfully');
+
+        // Configure WebSocketSystem callbacks for UI updates and latency tracking
+        const wsSystem = app.getWebSocketSystem();
+        if (wsSystem) {
+            wsSystem.setCallbacks({
+                onConnectionStateChange: (state) => {
+                    if (uiSystem) {
+                        uiSystem.setConnectionState(state);
+                    }
+                },
+                onDecodeStats: (stats) => {
+                    debug.logMain(`[Pure Decode] FPS: ${stats.pureFPS.toFixed(2)}, ` +
+                        `Avg Time: ${stats.avgDecodeTime.toFixed(2)}ms, ` +
+                        `Range: ${stats.minDecodeTime.toFixed(2)}-${stats.maxDecodeTime.toFixed(2)}ms, ` +
+                        `Recent Avg: ${stats.recentAvg.toFixed(2)}ms`);
+
+                    if (uiSystem) {
+                        uiSystem.updateDecodeFPS(stats.pureFPS, stats.avgDecodeTime);
+                    }
+
+                    // FPS measurement mode
+                    if (stats.fpsMeasurementData && latencyTracker.isFPSMeasurementActive()) {
+                        latencyTracker.recordPureDecodeFPSSample(
+                            stats.fpsMeasurementData.totalCount,
+                            stats.fpsMeasurementData.avgTime
+                        );
+                        debug.logFPS(`Recording decode sample: ${stats.fpsMeasurementData.totalCount} frames, ${stats.fpsMeasurementData.avgTime.toFixed(2)}ms avg`);
+                    } else {
+                        latencyTracker.recordPureDecodeFPS(stats.totalFrames, stats.avgDecodeTime);
+                    }
+                },
+                onFrameReceive: (frameId, serverTimestamps) => {
+                    latencyTracker.recordFrameReceive(frameId, serverTimestamps);
+                },
+                onFrameDecoded: (frameId, _decodeCompleteTime) => {
+                    latencyTracker.recordDecodeComplete(frameId);
+                    requestAnimationFrame(() => {
+                        latencyTracker.recordRenderComplete(frameId);
+                    });
+                },
+                onClockSync: (clientRequestTime, serverReceiveTime, serverSendTime) => {
+                    latencyTracker.recordClockSync(clientRequestTime, serverReceiveTime, serverSendTime);
+                },
+            });
+            debug.logMain('[Init] WebSocketSystem callbacks configured');
+        }
 
         // Register shader materials with RenderingContext
         if (app) {
