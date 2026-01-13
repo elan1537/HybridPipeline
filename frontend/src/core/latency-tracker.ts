@@ -58,8 +58,6 @@ export interface FPSMeasurementResult {
     bottlenecks: PerformanceBottleneck[]; // 감지된 병목 구간들
 }
 
-import { debug } from './debug-logger';
-
 export class LatencyTracker {
     private timingData: Map<number, TimingData> = new Map();
     private latencyHistory: LatencyStats[] = [];

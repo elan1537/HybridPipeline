@@ -7,23 +7,23 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons';
 import { System, SystemContext, RenderMode } from '../types';
-import { Application } from '../core/Application';
-import { WebSocketSystem } from './WebSocketSystem';
-import { TextureManager } from './TextureManager';
-import { LatencyTracker } from '../latency-tracker';
-import { debug } from '../debug-logger';
+import { Application } from '../core/application';
+import { WebSocketSystem } from './websocket-system';
+import { TextureManager } from './texture-manager';
+import { LatencyTracker } from '../core/latency-tracker';
+import { debug } from '../core/debug-logger';
 
 // Import panels
-import { StatsPanel } from '../ui/panels/StatsPanel';
-import { ControlPanel } from '../ui/panels/ControlPanel';
-import { DebugPanel } from '../ui/panels/DebugPanel';
-import { RecordingPanel } from '../ui/panels/RecordingPanel';
-import { FPSTestPanel } from '../ui/panels/FPSTestPanel';
-import { TimeControlUI } from '../ui/TimeControlUI';
-import { FrameScrubber } from '../ui/FrameScrubber';
+import { StatsPanel } from '../ui/panels/stats-panel';
+import { ControlPanel } from '../ui/panels/control-panel';
+import { DebugPanel } from '../ui/panels/debug-panel';
+import { RecordingPanel } from '../ui/panels/recording-panel';
+import { FPSTestPanel } from '../ui/panels/fps-test-panel';
+import { TimeControlUI } from '../ui/time-control-ui';
+import { FrameScrubber } from '../ui/frame-scrubber';
 
 // Import managers
-import { CameraStateManager } from '../ui/managers/CameraStateManager';
+import { CameraStateManager } from '../ui/managers/camera-state-manager';
 
 export class UISystem implements System {
   readonly name = 'ui';

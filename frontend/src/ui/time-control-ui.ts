@@ -7,7 +7,7 @@
  * - Current time display
  */
 
-import { TimeController } from "../core/Application";
+import { TimeController } from "../core/application";
 
 export class TimeControlUI {
   private container: HTMLDivElement;

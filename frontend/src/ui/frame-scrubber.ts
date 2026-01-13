@@ -7,7 +7,7 @@
  * - Drag to seek (pauses playback during drag)
  */
 
-import { TimeController } from "../core/Application";
+import { TimeController } from "../core/application";
 
 export class FrameScrubber {
   private container: HTMLDivElement;

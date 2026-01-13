@@ -5,9 +5,9 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons';
-import { debug } from '../../debug-logger';
-import { CameraStateManager } from '../managers/CameraStateManager';
-import { BasePanel } from './BasePanel';
+import { debug } from '../../core/debug-logger';
+import { CameraStateManager } from '../managers/camera-state-manager';
+import { BasePanel } from './base-panel';
 
 export interface DebugPanelCallbacks {
   onConsoleDebugToggle?: (enabled: boolean) => void;

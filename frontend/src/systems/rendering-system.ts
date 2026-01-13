@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import type { OrbitControls } from 'three/addons';
 import type { System, SystemContext } from '../types';
 import { RenderMode } from '../types';
-import { debug } from '../debug-logger';
+import { debug } from '../core/debug-logger';
 
 export interface RenderingConfig {
     // Scenes

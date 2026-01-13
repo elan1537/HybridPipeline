@@ -3,9 +3,9 @@
  * Extracted from main.ts (lines 91-103, 1567-1615)
  */
 
-import { debug } from '../../debug-logger';
-import type { LatencyStats } from '../../latency-tracker';
-import { BasePanel } from './BasePanel';
+import { debug } from '../../core/debug-logger';
+import type { LatencyStats } from '../../core/latency-tracker';
+import { BasePanel } from './base-panel';
 
 // Type for getRecentStats() return value
 interface AggregatedLatencyStats {

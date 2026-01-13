@@ -3,9 +3,9 @@
  * Fully migrated from main.ts (lines 1394-1584)
  */
 
-import { debug } from '../../debug-logger';
+import { debug } from '../../core/debug-logger';
 import { RenderMode } from '../../types';
-import { BasePanel } from './BasePanel';
+import { BasePanel } from './base-panel';
 
 export class RecordingPanel extends BasePanel {
   // DOM elements

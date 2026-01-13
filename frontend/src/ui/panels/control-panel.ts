@@ -3,9 +3,9 @@
  * Extracted from main.ts (lines 93-96, 146-150, 200-202, 281-331, 877-977)
  */
 
-import { debug } from '../../debug-logger';
+import { debug } from '../../core/debug-logger';
 import { RenderMode } from '../../types';
-import { BasePanel } from './BasePanel';
+import { BasePanel } from './base-panel';
 
 // Callbacks for handling UI events
 export interface ControlPanelCallbacks {

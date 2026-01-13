@@ -101,7 +101,7 @@ export class WebSocketSystem implements System {
 
     // Only create worker if not already set (Phase 2)
     if (!this.worker) {
-      this.worker = new Worker(new URL("../decode-worker.ts", import.meta.url), {
+      this.worker = new Worker(new URL("../workers/decode-worker.ts", import.meta.url), {
         type: "module",
       });
       this.setupWorkerHandlers();

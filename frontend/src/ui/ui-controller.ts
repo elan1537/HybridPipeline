@@ -1,5 +1,5 @@
 // ui-controller.ts
-import { debug } from './debug-logger';
+import { debug } from '../core/debug-logger';
 
 export class UIController {
     private isUIVisible: boolean = true;

@@ -5,8 +5,8 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons';
-import { SettingsManager } from './SettingsManager';
-import { debug } from '../../debug-logger';
+import { SettingsManager } from './settings-manager';
+import { debug } from '../../core/debug-logger';
 
 interface CameraData {
   position: { x: number; y: number; z: number };

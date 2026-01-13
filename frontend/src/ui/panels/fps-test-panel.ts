@@ -3,9 +3,9 @@
  * Fully migrated from main.ts (lines 639-810, 1289-1391)
  */
 
-import { debug } from '../../debug-logger';
-import { FPSMeasurementResult } from '../../latency-tracker';
-import { BasePanel } from './BasePanel';
+import { debug } from '../../core/debug-logger';
+import { FPSMeasurementResult } from '../../core/latency-tracker';
+import { BasePanel } from './base-panel';
 
 export interface FPSTestPanelCallbacks {
   onTestStart?: () => void;

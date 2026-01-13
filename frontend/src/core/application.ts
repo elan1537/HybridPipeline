@@ -5,14 +5,14 @@
  */
 
 import * as THREE from "three";
-import { RenderingContext } from "./RenderingContext";
-import { EventBus } from "./EventBus";
-import { ApplicationState } from "./ApplicationState";
+import { RenderingContext } from "./rendering-context";
+import { EventBus } from "./event-bus";
+import { ApplicationState } from "./application-state";
 import { System, SystemContext, ApplicationConfig, RenderMode } from "../types";
-import { WebSocketSystem } from "../systems/WebSocketSystem";
-import { TextureManager } from "../systems/TextureManager";
-import { CameraController } from "../systems/CameraController";
-import { RenderingSystem } from "../systems/RenderingSystem";
+import { WebSocketSystem } from "../systems/websocket-system";
+import { TextureManager } from "../systems/texture-manager";
+import { CameraController } from "../systems/camera-controller";
+import { RenderingSystem } from "../systems/rendering-system";
 
 export class Application {
   // Core components

@@ -1,15 +1,15 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons'
-import { robot_setup, object_setup, robot_animation } from './scene-setup';
-import { SceneState } from './state/scene-state';
-import { LatencyTracker, LatencyStats } from './latency-tracker';
-import { uiController } from './ui-controller';
-import { debug } from './debug-logger';
-import { CameraStateManager } from './ui/managers/CameraStateManager';
+import { robot_setup, object_setup, robot_animation } from './scene/scene-setup';
+import { SceneState } from './scene/scene-state';
+import { LatencyTracker, LatencyStats } from './core/latency-tracker';
+import { uiController } from './ui/ui-controller';
+import { debug } from './core/debug-logger';
+import { CameraStateManager } from './ui/managers/camera-state-manager';
 
-import { Application } from './core/Application';
+import { Application } from './core/application';
 import { RenderMode as NewRenderMode } from './types';
-import { UISystem } from './systems/UISystem';
+import { UISystem } from './systems/ui-system';
 
 import fusionVertexShader from './shaders/fusionVertexShader.vs?raw';
 import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';

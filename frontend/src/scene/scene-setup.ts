@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import URDFLoader from 'urdf-loader';
-import { SceneState } from './state/scene-state';
-import { debug } from './debug-logger';
+import { SceneState } from './scene-state';
+import { debug } from '../core/debug-logger';
 
 function object_setup() {
     const geometry = new THREE.TorusKnotGeometry(1, 0.3, 128, 32);
