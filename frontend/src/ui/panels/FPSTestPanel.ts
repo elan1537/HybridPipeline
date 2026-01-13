@@ -5,13 +5,15 @@
 
 import { debug } from '../../debug-logger';
 import { FPSMeasurementResult } from '../../latency-tracker';
+import { BasePanel } from './BasePanel';
 
 export interface FPSTestPanelCallbacks {
   onTestStart?: () => void;
   onTestStop?: () => void;
+  onDownloadResults?: () => void;
 }
 
-export class FPSTestPanel {
+export class FPSTestPanel extends BasePanel {
   // DOM elements
   private fpsTestButton: HTMLInputElement | null = null;
   private fpsTestProgress: HTMLDivElement | null = null;
@@ -24,26 +26,27 @@ export class FPSTestPanel {
   private callbacks: FPSTestPanelCallbacks = {};
 
   constructor(callbacks: FPSTestPanelCallbacks = {}) {
+    super();
     this.callbacks = callbacks;
     this.initializeElements();
     this.setupListeners();
   }
 
   private initializeElements(): void {
-    this.fpsTestButton = document.getElementById('fps-measurement-button') as HTMLInputElement;
-    this.fpsTestProgress = document.getElementById('fps-measurement-progress') as HTMLDivElement;
-    this.fpsTestCurrent = document.getElementById('fps-measurement-current') as HTMLDivElement;
-    this.fpsTestResult = document.getElementById('fps-measurement-result') as HTMLDivElement;
-    this.fpsResultDownload = document.getElementById('fps-result-download') as HTMLInputElement;
+    this.fpsTestButton = this.getElement('fps-measurement-button');
+    this.fpsTestProgress = this.getElement('fps-measurement-progress');
+    this.fpsTestCurrent = this.getElement('fps-measurement-current');
+    this.fpsTestResult = this.getElement('fps-measurement-result');
+    this.fpsResultDownload = this.getElement('fps-result-download');
   }
 
   private setupListeners(): void {
-    this.fpsTestButton?.addEventListener('click', () => this.handleTestToggle());
-    this.fpsResultDownload?.addEventListener('click', () => this.downloadResults());
+    this.addListener(this.fpsTestButton, 'click', () => this.handleTestToggle());
+    this.addListener(this.fpsResultDownload, 'click', () => this.downloadResults());
   }
 
   private handleTestToggle(): void {
-    const isActive = this.fpsTestButton?.value.includes('Stop');
+    const isActive = this.getValue(this.fpsTestButton).includes('Stop');
 
     if (isActive) {
       this.callbacks.onTestStop?.();
@@ -54,41 +57,37 @@ export class FPSTestPanel {
 
   // Public methods
   showTestStarted(): void {
-    if (this.fpsTestButton) this.fpsTestButton.value = 'Stop FPS Test';
-    if (this.fpsTestProgress) this.fpsTestProgress.style.display = 'block';
-    if (this.fpsTestCurrent) this.fpsTestCurrent.style.display = 'block';
-    if (this.fpsTestResult) this.fpsTestResult.style.display = 'none';
-    if (this.fpsResultDownload) this.fpsResultDownload.style.display = 'none';
+    this.setValue(this.fpsTestButton, 'Stop FPS Test');
+    this.setVisible(this.fpsTestProgress, true);
+    this.setVisible(this.fpsTestCurrent, true);
+    this.setVisible(this.fpsTestResult, false);
+    this.setVisible(this.fpsResultDownload, false);
 
     debug.logFPS('[FPSTestPanel] Test started');
   }
 
   showTestStopped(): void {
-    if (this.fpsTestButton) this.fpsTestButton.value = 'Start FPS Test (60s)';
-    if (this.fpsTestProgress) this.fpsTestProgress.style.display = 'none';
-    if (this.fpsTestCurrent) this.fpsTestCurrent.style.display = 'none';
+    this.setValue(this.fpsTestButton, 'Start FPS Test (60s)');
+    this.setVisible(this.fpsTestProgress, false);
+    this.setVisible(this.fpsTestCurrent, false);
 
     debug.logFPS('[FPSTestPanel] Test stopped');
   }
 
   updateProgress(progress: { progress: number; remainingMs: number }): void {
-    if (!this.fpsTestProgress) return;
-
     const remainingSeconds = Math.ceil(progress.remainingMs / 1000);
     const progressPercent = (progress.progress * 100).toFixed(1);
-    this.fpsTestProgress.textContent = `Progress: ${progressPercent}% (${remainingSeconds}s left)`;
+    this.updateText(this.fpsTestProgress, `Progress: ${progressPercent}% (${remainingSeconds}s left)`);
   }
 
   updateCurrent(stats: { decodeFPS: number; renderFPS: number }): void {
-    if (!this.fpsTestCurrent) return;
-
-    this.fpsTestCurrent.textContent =
-      `Current: Decode ${stats.decodeFPS.toFixed(1)}fps, Render ${stats.renderFPS.toFixed(1)}fps`;
+    this.updateText(
+      this.fpsTestCurrent,
+      `Current: Decode ${stats.decodeFPS.toFixed(1)}fps, Render ${stats.renderFPS.toFixed(1)}fps`
+    );
   }
 
   displayResult(result: FPSMeasurementResult): void {
-    if (!this.fpsTestResult) return;
-
     debug.logFPS('[FPSTestPanel] Displaying FPS result:', result);
 
     // Save result for download
@@ -126,8 +125,8 @@ export class FPSTestPanel {
     if (warnings.length > 0) {
       warningHtml = `
         <div style="margin-bottom: 4px; padding: 4px; background: rgba(255,170,0,0.1); border-left: 2px solid #ffaa00; font-size: 11px;">
-          <div style="font-weight: bold; color: #ffaa00; margin-bottom: 2px;">⚠️ Data Quality Warnings:</div>
-          ${warnings.map(warning => `<div style="color: #cccccc; font-size: 10px;">• ${warning}</div>`).join('')}
+          <div style="font-weight: bold; color: #ffaa00; margin-bottom: 2px;">Warning: Data Quality Warnings:</div>
+          ${warnings.map(warning => `<div style="color: #cccccc; font-size: 10px;">- ${warning}</div>`).join('')}
           <div style="color: #aaaaaa; font-size: 10px; margin-top: 2px;">Results may be incomplete. Try reconnecting and retesting.</div>
         </div>
       `;
@@ -152,13 +151,13 @@ export class FPSTestPanel {
       bottleneckHtml += '</div>';
     }
 
-    this.fpsTestResult.innerHTML = `
+    this.updateHtml(this.fpsTestResult, `
       <div style="margin-bottom: 2px; font-weight: bold;">Performance Test Complete (${duration}s):</div>
 
       ${warningHtml}
 
       <div style="margin-bottom: 4px; padding: 2px 0;">
-        <div style="color: #00ff00; font-size: 12px; margin-bottom: 1px;">📊 FPS Metrics:</div>
+        <div style="color: #00ff00; font-size: 12px; margin-bottom: 1px;">FPS Metrics:</div>
         <div style="margin-left: 8px; font-size: 11px;">
           <div>Pure Decode: ${pureDecodeFPS.toFixed(2)} fps (${avgDecodeTime.toFixed(1)}ms avg)</div>
           <div>Frame Processing: ${frameProcessingFPS.toFixed(2)} fps (${avgProcessingTime.toFixed(1)}ms avg)</div>
@@ -168,7 +167,7 @@ export class FPSTestPanel {
       </div>
 
       <div style="margin-bottom: 4px; padding: 2px 0;">
-        <div style="color: #00ff00; font-size: 12px; margin-bottom: 1px;">⚡ Latency:</div>
+        <div style="color: #00ff00; font-size: 12px; margin-bottom: 1px;">Latency:</div>
         <div style="margin-left: 8px; font-size: 11px;">
           <div>Average: ${averageLatency.toFixed(1)}ms</div>
           <div>Range: ${minLatency.toFixed(1)}ms - ${maxLatency.toFixed(1)}ms</div>
@@ -177,15 +176,13 @@ export class FPSTestPanel {
       </div>
 
       ${bottleneckHtml}
-    `;
+    `);
 
-    this.fpsTestResult.style.display = 'block';
+    this.setVisible(this.fpsTestResult, true);
 
     // 마지막 결과 저장 및 다운로드 버튼 표시 (유효한 데이터가 있을 때만)
     if (hasValidData && (pureDecodeFPS > 0 || frameProcessingFPS > 0 || renderFPS > 0)) {
-      if (this.fpsResultDownload) {
-        this.fpsResultDownload.style.display = 'block';
-      }
+      this.setVisible(this.fpsResultDownload, true);
       debug.logFPS('[FPSTestPanel] Result displayed successfully with download option');
     } else {
       debug.warn('[FPSTestPanel] Result displayed but insufficient data for download');
@@ -193,7 +190,7 @@ export class FPSTestPanel {
 
     // 병목 구간이 있으면 별도 로그 출력
     if (result.bottlenecks && result.bottlenecks.length > 0) {
-      debug.logFPS('[FPSTestPanel] 🚨 Performance Bottlenecks Detected:');
+      debug.logFPS('[FPSTestPanel] Performance Bottlenecks Detected:');
       result.bottlenecks.forEach(bottleneck => {
         debug.logFPS(`  ${bottleneck.severity.toUpperCase()}: ${bottleneck.stage} - ${bottleneck.avgTime.toFixed(1)}ms (${bottleneck.percentage.toFixed(1)}%)`);
         debug.logFPS(`  Suggestion: ${bottleneck.suggestion}`);
@@ -294,7 +291,7 @@ Latency Statistics:
 ${bottleneckText}
 System Information:
 - User Agent: ${navigator.userAgent}
-- Window Size: ${window.innerWidth}×${window.innerHeight}
+- Window Size: ${window.innerWidth}x${window.innerHeight}
 - Pixel Ratio: ${window.devicePixelRatio}
 - Hardware Decoding: ${config.jpegMode ? 'Not Used (JPEG Mode)' : 'Available (H.264 Mode)'}
 
