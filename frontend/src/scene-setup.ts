@@ -21,9 +21,9 @@ function object_setup() {
         return;
     }
     SceneState.mesh = new THREE.Mesh(geometry, material1);
-    SceneState.mesh.scale.set(0.2, 0.2, 0.2);
+    SceneState.mesh.scale.set(0.3, 0.3, 0.3);
     // SceneState.mesh.position.set(-0.5, 0.8, 1.0);
-    SceneState.mesh.position.set(0, 1.0, 0);
+    SceneState.mesh.position.set(0, 0.5, 0);
     SceneState.mesh.rotation.y = Math.PI / 2;
     // mesh.rotation.z = -10 * Math.PI / 180;
     SceneState.scene.add(SceneState.mesh);
