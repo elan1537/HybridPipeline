@@ -558,6 +558,11 @@ initScene().then(async () => {
                 },
             });
             debug.logMain('[Init] RenderingSystem configured');
+
+            // Set initial render mode (Application config → RenderingSystem)
+            const initialRenderMode = isPhysicsDebugOnly ? NewRenderMode.LOCAL_ONLY : NewRenderMode.FUSION;
+            renderingSystem.setRenderMode(initialRenderMode);
+            debug.logMain(`[Init] RenderingSystem set to: ${initialRenderMode}`);
         }
 
         // Start the render loop
