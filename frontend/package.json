@@ -4,6 +4,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
+    "dev:physics": "vite --mode physics",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -19,6 +20,7 @@
     "vite": "^6.2.2"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.19.3",
     "@mkkellogg/gaussian-splats-3d": "^0.4.7",
     "@types/dom-webcodecs": "^0.1.15",
     "@types/three": "^0.176.0",

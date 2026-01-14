@@ -8,8 +8,9 @@ import { debug } from './core/debug-logger';
 import { CameraStateManager } from './ui/managers/camera-state-manager';
 
 import { Application } from './core/application';
-import { RenderMode as NewRenderMode } from './types';
+import { RenderMode as NewRenderMode, PhysicsMode } from './types';
 import { UISystem } from './systems/ui-system';
+import { PhysicsSystem } from './systems/physics-system';
 
 import fusionVertexShader from './shaders/fusionVertexShader.vs?raw';
 import fusionColorFragmentShader from './shaders/fusionColorShader.fs?raw';
@@ -78,6 +79,24 @@ let depthFusionCamera: THREE.OrthographicCamera;
 const clock = new THREE.Clock();
 // 레이턴시 추적기
 const latencyTracker = new LatencyTracker();
+
+// Physics mode from environment variable (set via .env.physics)
+function getPhysicsMode(): PhysicsMode {
+    const mode = import.meta.env.VITE_PHYSICS_MODE;
+    switch (mode) {
+        case 'debug-only': return PhysicsMode.DEBUG_ONLY;
+        case 'debug': return PhysicsMode.DEBUG;
+        case 'simulation': return PhysicsMode.SIMULATION;
+        default: return PhysicsMode.DISABLED;
+    }
+}
+
+const physicsMode = getPhysicsMode();
+const isPhysicsDebugOnly = physicsMode === PhysicsMode.DEBUG_ONLY;
+
+if (physicsMode !== PhysicsMode.DISABLED) {
+    console.log(`[main.ts] Physics mode: ${physicsMode}`);
+}
 
 // 모든 렌더 타겟과 텍스처 재생성 (해상도 변경 시)
 function recreateRenderTargets() {
@@ -386,9 +405,10 @@ initScene().then(async () => {
             wsUrl: '', // Will be set when connecting
             width: rtWidth,
             height: rtHeight,
-            renderMode: NewRenderMode.Hybrid,
+            renderMode: isPhysicsDebugOnly ? NewRenderMode.LOCAL_ONLY : NewRenderMode.Hybrid,
             debugMode: true,
-            cameraConfig: cameraConfig, // Pass camera configuration
+            cameraConfig: cameraConfig,
+            physicsMode: physicsMode,
         });
 
         // Wrap existing objects - worker is created internally by WebSocketSystem
@@ -544,10 +564,93 @@ initScene().then(async () => {
         app.start();
         debug.logMain('[Init] Render loop started');
 
+        // Physics test scene (only when physics is enabled)
+        if (physicsMode !== PhysicsMode.DISABLED) {
+            setupPhysicsTestScene(app, localScene);
+        }
+
     } catch (error) {
         console.error('[Init] Failed to initialize:', error);
     }
 })
+
+/**
+ * Setup physics test scene with ground and falling cube
+ */
+function setupPhysicsTestScene(app: Application, scene: THREE.Scene): void {
+    const physics = app.getPhysicsSystem();
+    if (!physics) {
+        console.warn('[Physics] PhysicsSystem not available');
+        return;
+    }
+
+    // Add lighting for test scene
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 10, 5);
+    scene.add(directionalLight);
+
+    // Ground plane (static)
+    const groundGeometry = new THREE.PlaneGeometry(20, 20);
+    const groundMaterial = new THREE.MeshStandardMaterial({
+        color: 0x808080,
+        roughness: 0.8,
+        metalness: 0.2,
+    });
+    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = 0;
+    ground.name = 'PhysicsGround';
+    scene.add(ground);
+
+    physics.addBody(ground, {
+        type: 'static',
+        colliderShape: 'box',
+        colliderArgs: [10, 0.1, 10],
+    });
+
+    // Test cube (dynamic)
+    const cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
+    const cubeMaterial = new THREE.MeshStandardMaterial({
+        color: 0xff4444,
+        roughness: 0.5,
+        metalness: 0.3,
+    });
+    const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+    cube.position.set(0, 5, 0);
+    cube.name = 'PhysicsTestCube';
+    scene.add(cube);
+
+    physics.addBody(cube, {
+        type: 'dynamic',
+        colliderShape: 'box',
+        restitution: 0.5,
+        friction: 0.5,
+    });
+
+    // Add a sphere too
+    const sphereGeometry = new THREE.SphereGeometry(0.5, 32, 32);
+    const sphereMaterial = new THREE.MeshStandardMaterial({
+        color: 0x44ff44,
+        roughness: 0.5,
+        metalness: 0.3,
+    });
+    const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    sphere.position.set(2, 7, 0);
+    sphere.name = 'PhysicsTestSphere';
+    scene.add(sphere);
+
+    physics.addBody(sphere, {
+        type: 'dynamic',
+        colliderShape: 'sphere',
+        restitution: 0.7,
+        friction: 0.3,
+    });
+
+    console.log('[Physics] Test scene created: ground + falling cube + sphere');
+}
 
 function updateLatencyStats() {
     if (!uiSystem) return;

@@ -22,6 +22,6 @@ export default defineConfig({
   },
   plugins: [wasm(), basicSsl()],
   optimizeDeps: {
-    exclude: ['lz4-wasm'],
+    exclude: ['lz4-wasm', '@dimforge/rapier3d-compat'],
   },
 });

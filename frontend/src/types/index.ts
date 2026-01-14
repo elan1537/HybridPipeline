@@ -2,8 +2,6 @@
  * Frontend Type Definitions
  * Part of the refactoring effort to modularize the codebase
  * CP1: Type definitions and interfaces for refactoring
- *
- * Note: Physics and collision types will be added in a future phase
  */
 
 import * as THREE from "three";
@@ -73,7 +71,8 @@ export interface ApplicationConfig {
   height: number;
   renderMode: RenderMode;
   debugMode: boolean;
-  cameraConfig?: CameraConfig; // Optional camera configuration
+  cameraConfig?: CameraConfig;
+  physicsMode?: PhysicsMode;
 }
 
 /**
@@ -238,6 +237,40 @@ export enum LatencyType {
   Total = "total",
 }
 
+/**
+ * Physics simulation modes
+ * - DISABLED: No physics simulation
+ * - SIMULATION: Physics running, normal render
+ * - DEBUG: Physics + debug wireframe visualization
+ * - DEBUG_ONLY: Physics debug mode without WebSocket/TextureManager
+ */
+export enum PhysicsMode {
+  DISABLED = "disabled",
+  SIMULATION = "simulation",
+  DEBUG = "debug",
+  DEBUG_ONLY = "debug-only",
+}
+
+/**
+ * Physics body types for rigid body creation
+ */
+export enum PhysicsBodyType {
+  DYNAMIC = "dynamic",
+  KINEMATIC = "kinematic",
+  STATIC = "static",
+}
+
+/**
+ * Collider shape types
+ */
+export enum ColliderShape {
+  BOX = "box",
+  SPHERE = "sphere",
+  CAPSULE = "capsule",
+  MESH = "mesh",
+  CONVEX = "convex",
+}
+
 // ============================================================================
 // System Interface
 // ============================================================================
@@ -345,4 +378,39 @@ export type Awaited<T> = T extends Promise<infer U> ? U : T;
  */
 export interface Disposable {
   dispose(): void;
+}
+
+// ============================================================================
+// Physics Types
+// ============================================================================
+
+/**
+ * Physics world configuration
+ */
+export interface PhysicsConfig {
+  gravity: { x: number; y: number; z: number };
+  timestep: number;
+  substeps: number;
+}
+
+/**
+ * Options for creating a physics body
+ */
+export interface PhysicsBodyOptions {
+  type: "dynamic" | "kinematic" | "static";
+  mass?: number;
+  restitution?: number;
+  friction?: number;
+  colliderShape: "box" | "sphere" | "capsule" | "mesh" | "convex";
+  colliderArgs?: number[];
+}
+
+/**
+ * Sync data for Object3D ↔ RigidBody mapping
+ */
+export interface PhysicsBodySync {
+  object3D: THREE.Object3D;
+  rigidBodyHandle: number;
+  colliderHandle: number;
+  options: PhysicsBodyOptions;
 }

@@ -8,11 +8,12 @@ import * as THREE from "three";
 import { RenderingContext } from "./rendering-context";
 import { EventBus } from "./event-bus";
 import { ApplicationState } from "./application-state";
-import { System, SystemContext, ApplicationConfig, RenderMode } from "../types";
+import { System, SystemContext, ApplicationConfig, RenderMode, PhysicsMode } from "../types";
 import { WebSocketSystem } from "../systems/websocket-system";
 import { TextureManager } from "../systems/texture-manager";
 import { CameraController } from "../systems/camera-controller";
 import { RenderingSystem } from "../systems/rendering-system";
+import { PhysicsSystem } from "../systems/physics-system";
 
 export class Application {
   // Core components
@@ -26,6 +27,7 @@ export class Application {
   private textureManager: TextureManager | null = null;
   private cameraController: CameraController | null = null;
   private renderingSystem: RenderingSystem | null = null;
+  private physicsSystem: PhysicsSystem | null = null;
 
   // Render loop
   private clock: THREE.Clock = new THREE.Clock();
@@ -54,6 +56,10 @@ export class Application {
     this.state.set("rendering:height", config.height);
     this.state.set("debug:consoleLogging", config.debugMode);
 
+    // Store physics mode
+    const physicsMode = config.physicsMode ?? PhysicsMode.DISABLED;
+    this.state.set("physics:mode", physicsMode);
+
     // Store camera config if provided
     if (config.cameraConfig) {
       this.state.set("camera:config", config.cameraConfig);
@@ -61,6 +67,7 @@ export class Application {
     }
 
     console.log("[Application] Created with config:", config);
+    console.log("[Application] Physics mode:", physicsMode);
   }
 
   /**
@@ -79,19 +86,36 @@ export class Application {
     // Wrap existing objects
     this.renderingContext = new RenderingContext(scene, camera, renderer, controls);
 
-    // Create systems
-    this.websocketSystem = new WebSocketSystem();
-    this.textureManager = new TextureManager();
+    // Get physics mode to determine which systems to create
+    const physicsMode = this.state.get("physics:mode") as PhysicsMode;
+    const isPhysicsDebugOnly = physicsMode === PhysicsMode.DEBUG_ONLY;
+
+    // Create systems conditionally based on physics mode
+    if (!isPhysicsDebugOnly) {
+      // Normal mode: create WebSocket and TextureManager
+      this.websocketSystem = new WebSocketSystem();
+      this.textureManager = new TextureManager();
+      this.systems.set("websocket", this.websocketSystem);
+      this.systems.set("texture", this.textureManager);
+      console.log("[Application] WebSocket and TextureManager systems created");
+    } else {
+      console.log("[Application] DEBUG_ONLY mode: skipping WebSocket and TextureManager");
+    }
+
+    // Camera and Rendering systems are always created
     this.cameraController = new CameraController();
     this.renderingSystem = new RenderingSystem();
-
-    // Register systems
-    this.systems.set("websocket", this.websocketSystem);
-    this.systems.set("texture", this.textureManager);
     this.systems.set("camera", this.cameraController);
     this.systems.set("rendering", this.renderingSystem);
 
-    // Set existing worker before initialization
+    // Create PhysicsSystem if physics is enabled
+    if (physicsMode !== PhysicsMode.DISABLED) {
+      this.physicsSystem = new PhysicsSystem();
+      this.systems.set("physics", this.physicsSystem);
+      console.log("[Application] PhysicsSystem created");
+    }
+
+    // Set existing worker before initialization (only if WebSocketSystem exists)
     if (existingWorker && this.websocketSystem) {
       this.websocketSystem.setWorker(existingWorker);
       console.log("[Application] Using existing worker for WebSocketSystem");
@@ -389,6 +413,10 @@ export class Application {
 
   getRenderingSystem(): RenderingSystem | null {
     return this.renderingSystem;
+  }
+
+  getPhysicsSystem(): PhysicsSystem | null {
+    return this.physicsSystem;
   }
 
   getRenderingContext(): RenderingContext | null {
