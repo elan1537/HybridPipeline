@@ -14,12 +14,14 @@ export interface TimingData {
 
 export interface LatencyStats {
     roundTripTime: number;           // 전체 왕복 시간
-    networkUploadTime: number;       // 업로드 네트워크 시간
+    uploadDeliveryDelay: number;     // upstream delivery delay (not pure network)
     serverProcessingTime: number;    // 서버 처리 시간
-    networkDownloadTime: number;     // 다운로드 네트워크 시간
+    downloadDeliveryDelay: number;   // downstream delivery delay (not pure network)
+    uploadDeliveryDelayRaw: number;  // upstream raw (pre-clamp, may be negative)
+    downloadDeliveryDelayRaw: number; // downstream raw (pre-clamp, may be negative)
     clientDecodeTime: number;        // 클라이언트 디코딩 시간
     clientRenderTime: number;        // 클라이언트 렌더링 시간
-    totalLatency: number;           // 총 레이턴시 (send -> render)
+    totalLatency: number;            // 총 레이턴시 (send -> render)
 }
 
 export interface ClockSyncData {
@@ -45,6 +47,9 @@ export interface FPSMeasurementResult {
     pureDecodeFPS: number;          // 순수 decode FPS (worker 내부 측정)
     frameProcessingFPS: number;     // 프레임 처리 FPS (texture update 등)
     renderFPS: number;              // 실제 렌더링 FPS (requestAnimationFrame 기준)
+    displayedFPS: number;           // present 기준 FPS (displayed_frames / duration)
+    dropRatio: number;              // 프레임 드롭 비율 (superseded / total)
+    supersededFrames: number;       // RAF 사이에 덮어써진 프레임 수
     totalFrames: number;
     measurementDurationMs: number;
     averageLatency: number;
@@ -87,6 +92,17 @@ export class LatencyTracker {
     private fpsTestProcessingTimeSamples: number[] = [];
     private fpsTestRenderTimeSamples: number[] = [];
 
+    // Present-based FPS tracking
+    private presentedFrameCount: number = 0;
+    private firstPresentTs: number | null = null;
+    private lastPresentTs: number | null = null;
+    private totalSuperseded: number = 0;
+    // Per-measurement present tracking (reset on startFPSMeasurement)
+    private fpsTestPresentedCount: number = 0;
+    private fpsTestFirstPresentTs: number | null = null;
+    private fpsTestLastPresentTs: number | null = null;
+    private fpsTestTotalSuperseded: number = 0;
+
     constructor() {
         this.startClockSync();
     }
@@ -96,11 +112,11 @@ export class LatencyTracker {
         return ++this.frameIdCounter;
     }
 
-    // 카메라 데이터 전송 시작 시점 기록
+    // 카메라 데이터 전송 시작 시점 기록 (absolute ms)
     recordCameraSend(frameId: number): void {
         const timing: TimingData = {
             frameId,
-            clientSendTime: performance.now()
+            clientSendTime: performance.timeOrigin + performance.now()
         };
         this.timingData.set(frameId, timing);
         
@@ -121,7 +137,7 @@ export class LatencyTracker {
         const timing = this.timingData.get(frameId);
         if (!timing) return;
 
-        timing.clientReceiveTime = performance.now();
+        timing.clientReceiveTime = performance.timeOrigin + performance.now();
         
         if (serverTimestamps) {
             // 서버 타임스탬프를 원본 그대로 저장 (계산시에 오프셋 적용)
@@ -137,7 +153,7 @@ export class LatencyTracker {
         const timing = this.timingData.get(frameId);
         if (!timing) return;
 
-        timing.clientDecodeTime = performance.now();
+        timing.clientDecodeTime = performance.timeOrigin + performance.now();
         
         // FPS 측정 중이면 카운트
         if (this.fpsTestActive) {
@@ -150,7 +166,7 @@ export class LatencyTracker {
         const timing = this.timingData.get(frameId);
         if (!timing) return null;
 
-        timing.clientRenderTime = performance.now();
+        timing.clientRenderTime = performance.timeOrigin + performance.now();
 
         // 레이턴시 통계 계산
         const stats = this.calculateLatencyStats(timing);
@@ -180,6 +196,63 @@ export class LatencyTracker {
         return stats;
     }
 
+    // Present 기준 프레임 기록 (RAF에서 실제로 화면에 반영된 프레임만)
+    recordPresent(frameId: number, supersededCount: number): void {
+        const t8 = performance.timeOrigin + performance.now();
+
+        // Global present tracking
+        this.presentedFrameCount++;
+        this.totalSuperseded += supersededCount;
+        if (this.firstPresentTs === null) this.firstPresentTs = t8;
+        this.lastPresentTs = t8;
+
+        // FPS measurement present tracking
+        if (this.fpsTestActive) {
+            this.fpsTestPresentedCount++;
+            this.fpsTestTotalSuperseded += supersededCount;
+            if (this.fpsTestFirstPresentTs === null) this.fpsTestFirstPresentTs = t8;
+            this.fpsTestLastPresentTs = t8;
+        }
+
+        // Record render complete for this frame (latency stats)
+        const timing = this.timingData.get(frameId);
+        if (timing) {
+            timing.clientRenderTime = t8;
+
+            const stats = this.calculateLatencyStats(timing);
+            if (stats) {
+                this.latencyHistory.push(stats);
+                if (this.latencyHistory.length > this.maxHistorySize) {
+                    this.latencyHistory.shift();
+                }
+
+                if (this.fpsTestActive) {
+                    this.fpsTestRenderCount++;
+                    this.fpsTestLatencySum += stats.totalLatency;
+                    this.fpsTestMinLatency = Math.min(this.fpsTestMinLatency, stats.totalLatency);
+                    this.fpsTestMaxLatency = Math.max(this.fpsTestMaxLatency, stats.totalLatency);
+
+                    const renderTime = stats.clientRenderTime;
+                    if (renderTime > 0 && renderTime <= 100) {
+                        this.fpsTestRenderTimeSamples.push(renderTime);
+                    }
+                }
+            }
+        }
+    }
+
+    // Displayed FPS (present 기준, count / duration)
+    getDisplayedFPS(): { fps: number; dropRatio: number; presentedFrames: number; supersededFrames: number } {
+        if (this.firstPresentTs === null || this.lastPresentTs === null || this.presentedFrameCount < 2) {
+            return { fps: 0, dropRatio: 0, presentedFrames: this.presentedFrameCount, supersededFrames: this.totalSuperseded };
+        }
+        const durationSec = (this.lastPresentTs - this.firstPresentTs) / 1000;
+        const fps = durationSec > 0 ? (this.presentedFrameCount - 1) / durationSec : 0;
+        const total = this.presentedFrameCount + this.totalSuperseded;
+        const dropRatio = total > 0 ? this.totalSuperseded / total : 0;
+        return { fps, dropRatio, presentedFrames: this.presentedFrameCount, supersededFrames: this.totalSuperseded };
+    }
+
     private calculateLatencyStats(timing: TimingData): LatencyStats | null {
         const { 
             clientSendTime, 
@@ -199,59 +272,54 @@ export class LatencyTracker {
         const roundTripTime = clientReceiveTime - clientSendTime;
         const totalLatency = clientRenderTime - clientSendTime;
 
-        let networkUploadTime = 0;
+        let uploadDelayRaw = 0;
+        let downloadDelayRaw = 0;
         let serverProcessingTime = 0;
-        let networkDownloadTime = 0;
 
-        // 서버 타임스탬프가 있는 경우 더 정확한 계산 (클럭 오프셋 적용)
+        // 서버 타임스탬프가 있는 경우 (클럭 오프셋 적용)
+        // Note: These are "delivery delays" — not pure network propagation times.
+        // They include app-level queuing, OS buffers, and clock sync error.
         if (serverReceiveTime && serverProcessStartTime && serverProcessEndTime && serverSendTime) {
-            // 서버 시간을 클라이언트 시간으로 변환 (클럭 오프셋 차감)
             const adjustedServerReceiveTime = serverReceiveTime - this.clockOffset;
             const adjustedServerProcessStartTime = serverProcessStartTime - this.clockOffset;
             const adjustedServerProcessEndTime = serverProcessEndTime - this.clockOffset;
             const adjustedServerSendTime = serverSendTime - this.clockOffset;
-            
-            networkUploadTime = adjustedServerReceiveTime - clientSendTime;
+
+            uploadDelayRaw = adjustedServerReceiveTime - clientSendTime;
             serverProcessingTime = adjustedServerProcessEndTime - adjustedServerProcessStartTime;
-            networkDownloadTime = clientReceiveTime - adjustedServerSendTime;
-            
-            // 네트워크 지연시간이 음수가 되는 경우 클럭 동기화 오차로 간주하여 보정
-            if (networkUploadTime < 0) {
-                debug.warn(`Negative upload time detected: ${networkUploadTime.toFixed(1)}ms, clock sync may need adjustment`);
-                networkUploadTime = Math.max(0, networkUploadTime);
-            }
-            if (networkDownloadTime < 0) {
-                debug.warn(`Negative download time detected: ${networkDownloadTime.toFixed(1)}ms, clock sync may need adjustment`);
-                networkDownloadTime = Math.max(0, networkDownloadTime);
-            }
+            downloadDelayRaw = clientReceiveTime - adjustedServerSendTime;
         } else {
             // 서버 타임스탬프가 없는 경우 추정
-            networkUploadTime = roundTripTime * 0.3; // 추정
-            serverProcessingTime = roundTripTime * 0.4; // 추정  
-            networkDownloadTime = roundTripTime * 0.3; // 추정
+            uploadDelayRaw = roundTripTime * 0.3;
+            serverProcessingTime = roundTripTime * 0.4;
+            downloadDelayRaw = roundTripTime * 0.3;
         }
 
         return {
             roundTripTime,
-            networkUploadTime: Math.max(0, networkUploadTime),
+            uploadDeliveryDelay: Math.max(0, uploadDelayRaw),
             serverProcessingTime: Math.max(0, serverProcessingTime),
-            networkDownloadTime: Math.max(0, networkDownloadTime),
+            downloadDeliveryDelay: Math.max(0, downloadDelayRaw),
+            uploadDeliveryDelayRaw: uploadDelayRaw,
+            downloadDeliveryDelayRaw: downloadDelayRaw,
             clientDecodeTime: clientDecodeTime - clientReceiveTime,
             clientRenderTime: clientRenderTime - clientDecodeTime,
             totalLatency
         };
     }
 
-    // 클럭 동기화 (개선된 알고리즘)
-    recordClockSync(clientRequestTime: number, serverReceiveTime: number, serverSendTime: number): void {
-        const clientResponseTime = performance.now();
-        const roundTripTime = clientResponseTime - clientRequestTime;
-        
-        // 네트워크 지연시간의 절반을 가정하여 오프셋 계산
-        const networkDelay = roundTripTime / 2;
-        const serverMidTime = (serverReceiveTime + serverSendTime) / 2;
-        const clientMidTime = clientRequestTime + networkDelay;
-        const estimatedOffset = serverMidTime - clientMidTime;
+    // 클럭 동기화 — NTP-style 4-timestamp algorithm
+    // c0: clientRequestTime, s1: serverReceiveTime, s2: serverSendTime, c3: clientResponseTime
+    // offset = ((s1 - c0) + (s2 - c3)) / 2
+    // rtt = (c3 - c0) - (s2 - s1)
+    recordClockSync(clientRequestTime: number, serverReceiveTime: number, serverSendTime: number, clientResponseTime?: number): void {
+        const c3 = clientResponseTime ?? (performance.timeOrigin + performance.now());
+        const c0 = clientRequestTime;
+        const s1 = serverReceiveTime;
+        const s2 = serverSendTime;
+
+        const roundTripTime = (c3 - c0) - (s2 - s1);
+        const estimatedOffset = ((s1 - c0) + (s2 - c3)) / 2;
 
         const syncData: ClockSyncData = {
             clientRequestTime,
@@ -322,8 +390,9 @@ export class LatencyTracker {
         }
 
         const keys: (keyof LatencyStats)[] = [
-            'roundTripTime', 'networkUploadTime', 'serverProcessingTime', 
-            'networkDownloadTime', 'clientDecodeTime', 'clientRenderTime', 'totalLatency'
+            'roundTripTime', 'uploadDeliveryDelay', 'serverProcessingTime',
+            'downloadDeliveryDelay', 'uploadDeliveryDelayRaw', 'downloadDeliveryDelayRaw',
+            'clientDecodeTime', 'clientRenderTime', 'totalLatency'
         ];
 
         const result: any = {
@@ -398,15 +467,15 @@ export class LatencyTracker {
         
         const totalLatency = stats.avg.totalLatency || 0;
         
-        // Network Upload 병목 체크
-        const networkUploadTime = stats.avg.networkUploadTime || 0;
-        if (networkUploadTime > thresholds.networkUpload) {
+        // Upload Delivery Delay 병목 체크
+        const uploadDelay = stats.avg.uploadDeliveryDelay || 0;
+        if (uploadDelay > thresholds.networkUpload) {
             bottlenecks.push({
-                stage: 'Network Upload',
-                severity: networkUploadTime > thresholds.networkUpload * 2 ? 'critical' : 'warning',
-                avgTime: networkUploadTime,
+                stage: 'Upload Delivery',
+                severity: uploadDelay > thresholds.networkUpload * 2 ? 'critical' : 'warning',
+                avgTime: uploadDelay,
                 threshold: thresholds.networkUpload,
-                percentage: (networkUploadTime / totalLatency) * 100,
+                percentage: (uploadDelay / totalLatency) * 100,
                 suggestion: 'Check network connectivity or server location. Consider using a closer server or optimizing camera data compression.'
             });
         }
@@ -424,15 +493,15 @@ export class LatencyTracker {
             });
         }
         
-        // Network Download 병목 체크
-        const networkDownloadTime = stats.avg.networkDownloadTime || 0;
-        if (networkDownloadTime > thresholds.networkDownload) {
+        // Download Delivery Delay 병목 체크
+        const downloadDelay = stats.avg.downloadDeliveryDelay || 0;
+        if (downloadDelay > thresholds.networkDownload) {
             bottlenecks.push({
-                stage: 'Network Download',
-                severity: networkDownloadTime > thresholds.networkDownload * 2 ? 'critical' : 'warning',
-                avgTime: networkDownloadTime,
+                stage: 'Download Delivery',
+                severity: downloadDelay > thresholds.networkDownload * 2 ? 'critical' : 'warning',
+                avgTime: downloadDelay,
                 threshold: thresholds.networkDownload,
-                percentage: (networkDownloadTime / totalLatency) * 100,
+                percentage: (downloadDelay / totalLatency) * 100,
                 suggestion: 'Download bandwidth may be limited. Check network speed or reduce stream quality.'
             });
         }
@@ -536,7 +605,13 @@ export class LatencyTracker {
         this.fpsTestDecodeTimeSamples = [];
         this.fpsTestProcessingTimeSamples = [];
         this.fpsTestRenderTimeSamples = [];
-        
+
+        // Present-based FPS counters reset
+        this.fpsTestPresentedCount = 0;
+        this.fpsTestFirstPresentTs = null;
+        this.fpsTestLastPresentTs = null;
+        this.fpsTestTotalSuperseded = 0;
+
         debug.logLatency('FPS measurement started - all counters reset');
         
         // 60초 후 자동 중지 (보조 타이머)
@@ -603,28 +678,45 @@ export class LatencyTracker {
         this.validateFPSCalculations(calculatedFrameProcessingFPS, avgProcessingTime, 'Frame Processing');
         this.validateFPSCalculations(calculatedRenderFPS, avgRenderTime, 'Render');
 
+        // Present-based displayed FPS (count / duration) — primary metric
+        let displayedFPS = 0;
+        let dropRatio = 0;
+        if (this.fpsTestFirstPresentTs !== null && this.fpsTestLastPresentTs !== null && this.fpsTestPresentedCount >= 2) {
+            const presentDurationSec = (this.fpsTestLastPresentTs - this.fpsTestFirstPresentTs) / 1000;
+            displayedFPS = presentDurationSec > 0 ? (this.fpsTestPresentedCount - 1) / presentDurationSec : 0;
+            const totalDelivered = this.fpsTestPresentedCount + this.fpsTestTotalSuperseded;
+            dropRatio = totalDelivered > 0 ? this.fpsTestTotalSuperseded / totalDelivered : 0;
+        }
+
         const result: FPSMeasurementResult = {
             // 기존 FPS 측정값들
             decodeFPS: this.fpsTestDecodeCount / measurementDurationSeconds,
             renderFPS: calculatedRenderFPS,
-            totalFrames: this.fpsTestRenderCount,
+            // Present-based metrics (primary)
+            displayedFPS,
+            dropRatio,
+            supersededFrames: this.fpsTestTotalSuperseded,
+            totalFrames: this.fpsTestPresentedCount,
             measurementDurationMs,
             averageLatency: this.fpsTestRenderCount > 0 ? this.fpsTestLatencySum / this.fpsTestRenderCount : 0,
             minLatency: this.fpsTestMinLatency === Infinity ? 0 : this.fpsTestMinLatency,
             maxLatency: this.fpsTestMaxLatency,
-            
+
             // 새로운 성능 지표들 (검증된 값들)
             pureDecodeFPS: calculatedPureDecodeFPS,
             frameProcessingFPS: calculatedFrameProcessingFPS,
             avgDecodeTime,
             avgProcessingTime,
             avgRenderTime,
-            
+
             // 성능 병목 분석 결과
             bottlenecks
         };
-        
+
         debug.logLatency('Final result:', {
+            displayedFPS: result.displayedFPS.toFixed(2),
+            dropRatio: result.dropRatio.toFixed(3),
+            supersededFrames: result.supersededFrames,
             pureDecodeFPS: result.pureDecodeFPS.toFixed(2),
             frameProcessingFPS: result.frameProcessingFPS.toFixed(2),
             renderFPS: result.renderFPS.toFixed(2),

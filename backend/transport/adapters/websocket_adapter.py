@@ -12,8 +12,9 @@ Protocol:
 
 import asyncio
 import struct
-import time
 from typing import Optional
+
+from renderer.utils.clock import monotonic_ms
 
 import websockets
 from websockets.server import WebSocketServerProtocol
@@ -205,7 +206,7 @@ class WebSocketAdapter(BaseFrontendAdapter):
 
                 # Camera data (260 bytes, Protocol v3)
                 elif len(raw) == 260:
-                    server_timestamp = time.time() * 1000.0  # ms
+                    server_timestamp = monotonic_ms()
 
                     # Parse Frontend camera (260 bytes → CameraFrame, Protocol v3)
                     camera = parse_frontend_camera(
@@ -246,17 +247,27 @@ class WebSocketAdapter(BaseFrontendAdapter):
         """
         Handle ping message and send pong response.
 
+        NTP-style 4-timestamp sync:
+          c0: client ping send (in raw message)
+          s1: server ping receive (recorded here)
+          s2: server pong send (recorded here)
+          c3: client pong receive (recorded by client)
+
+        Pong format (32 bytes):
+          type(1) + padding(7) + c0(8) + s1(8) + s2(8)
+
         Args:
             raw: 16 bytes ping message
         """
+        s1 = monotonic_ms()  # server receive time
         message_type = struct.unpack_from("<B", raw, 0)[0]
 
         if message_type == 255:  # Ping
             client_time = struct.unpack_from("<d", raw, 8)[0]
-            server_time = time.time() * 1000.0  # ms
+            s2 = monotonic_ms()  # server send time
 
-            # Pong response (type=254)
-            pong_response = struct.pack("<B7xdd", 254, client_time, server_time)
+            # Pong response (type=254) — 32 bytes with separate s1, s2
+            pong_response = struct.pack("<B7xddd", 254, client_time, s1, s2)
             await self.ws.send(pong_response)
 
     async def recv_camera(self) -> Optional[CameraFrame]:
@@ -293,7 +304,7 @@ class WebSocketAdapter(BaseFrontendAdapter):
             metadata = payload.metadata
 
             # Get current timestamp
-            transport_send_timestamp = time.time() * 1000.0  # ms
+            transport_send_timestamp = monotonic_ms()
 
             # Create Frontend video header (44 or 48 bytes)
             frontend_header = create_frontend_video_header(

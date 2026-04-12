@@ -18,7 +18,7 @@ class RawEncoder(BaseEncoder):
 
     async def encode(self, output: RenderOutput, frame_id: int) -> RenderPayload:
         """Serialize tensors using torch.save."""
-        import time
+        from renderer.utils.clock import monotonic_ms
 
         output.validate()
 
@@ -34,7 +34,7 @@ class RawEncoder(BaseEncoder):
         serialized = buffer.getvalue()
 
         # Measure encode end time
-        encode_end_timestamp = time.time() * 1000.0  # ms
+        encode_end_timestamp = monotonic_ms()
 
         # Extract timestamps from RenderOutput metadata
         client_timestamp = output.metadata.get("client_timestamp", 0.0)

@@ -373,6 +373,10 @@ async function initScene() {
 let app: Application | null = null;
 let uiSystem: UISystem | null = null;
 
+// Present-based FPS tracking: only the latest decoded frame per RAF gets "presented"
+let pendingPresentFrame: { frameId: number } | null = null;
+let supersededSinceLastPresent = 0;
+
 initScene().then(async () => {
     // UI 컨트롤러 활성화
     debug.logMain('UI Controller initialized:', uiController.isVisible())
@@ -450,12 +454,15 @@ initScene().then(async () => {
                 },
                 onFrameDecoded: (frameId, _decodeCompleteTime) => {
                     latencyTracker.recordDecodeComplete(frameId);
-                    requestAnimationFrame(() => {
-                        latencyTracker.recordRenderComplete(frameId);
-                    });
+                    // Present tracking: only store as pending; actual present
+                    // happens in the RAF present loop below
+                    if (pendingPresentFrame !== null) {
+                        supersededSinceLastPresent++;
+                    }
+                    pendingPresentFrame = { frameId };
                 },
-                onClockSync: (clientRequestTime, serverReceiveTime, serverSendTime) => {
-                    latencyTracker.recordClockSync(clientRequestTime, serverReceiveTime, serverSendTime);
+                onClockSync: (clientRequestTime, serverReceiveTime, serverSendTime, clientResponseTime) => {
+                    latencyTracker.recordClockSync(clientRequestTime, serverReceiveTime, serverSendTime, clientResponseTime);
                 },
             });
             debug.logMain('[Init] WebSocketSystem callbacks configured');
@@ -543,6 +550,20 @@ initScene().then(async () => {
         // Start the render loop
         app.start();
         debug.logMain('[Init] Render loop started');
+
+        // Present loop: once per RAF, present the latest decoded frame
+        // This ensures displayedFPS counts only frames that actually reached the screen
+        function presentLoop() {
+            if (pendingPresentFrame !== null) {
+                const frame = pendingPresentFrame;
+                pendingPresentFrame = null;
+                latencyTracker.recordPresent(frame.frameId, supersededSinceLastPresent);
+                supersededSinceLastPresent = 0;
+            }
+            requestAnimationFrame(presentLoop);
+        }
+        requestAnimationFrame(presentLoop);
+        debug.logMain('[Init] Present loop started');
 
     } catch (error) {
         console.error('[Init] Failed to initialize:', error);

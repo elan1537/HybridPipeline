@@ -141,8 +141,8 @@ def parse_frontend_camera(
         print(f"  near={near:.3f}, far={far:.3f}")
         print(f"  time_index={time_index:.6f}")
 
-    import time
-    server_timestamp = time.time() * 1000.0  # ms
+    from renderer.utils.clock import monotonic_ms
+    server_timestamp = monotonic_ms()
 
     return CameraFrame(
         view_matrix=view_matrix,      # (4, 4) numpy array
