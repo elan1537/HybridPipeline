@@ -94,10 +94,10 @@ export class StatsPanel extends BasePanel {
       );
     }
 
-    // Update network latency
-    if (stats.avg.networkUploadTime !== undefined && stats.avg.networkDownloadTime !== undefined) {
-      const totalNetwork = stats.avg.networkUploadTime + stats.avg.networkDownloadTime;
-      this.updateText(this.networkLatencyDiv, `Network: ${totalNetwork.toFixed(1)}ms`);
+    // Update transport delivery delay (not pure network — includes app-level queuing)
+    if (stats.avg.uploadDeliveryDelay !== undefined && stats.avg.downloadDeliveryDelay !== undefined) {
+      const totalDelay = stats.avg.uploadDeliveryDelay + stats.avg.downloadDeliveryDelay;
+      this.updateText(this.networkLatencyDiv, `Transport Delay: ${totalDelay.toFixed(1)}ms`);
     }
 
     // Update server latency
@@ -118,7 +118,7 @@ export class StatsPanel extends BasePanel {
     if (stats.avg.totalLatency !== undefined) {
       debug.logLatency(
         `Stats - Total: ${stats.avg.totalLatency.toFixed(1)}ms, ` +
-        `Network: ${((stats.avg.networkUploadTime || 0) + (stats.avg.networkDownloadTime || 0)).toFixed(1)}ms, ` +
+        `Transport: ${((stats.avg.uploadDeliveryDelay || 0) + (stats.avg.downloadDeliveryDelay || 0)).toFixed(1)}ms, ` +
         `Server: ${(stats.avg.serverProcessingTime || 0).toFixed(1)}ms, ` +
         `Decode: ${(stats.avg.clientDecodeTime || 0).toFixed(1)}ms, ` +
         `Render: ${(stats.avg.clientRenderTime || 0).toFixed(1)}ms, ` +

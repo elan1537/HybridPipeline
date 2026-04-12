@@ -1,8 +1,8 @@
 """H.264 encoder using NVENC."""
 
-import time
 import torch
 from renderer.encoders.base import BaseEncoder
+from renderer.utils.clock import monotonic_ms
 from renderer.data_types import RenderOutput, RenderPayload
 from renderer.utils.depth_utils import depth_to_rgb
 from renderer.utils.color_utils import rgb_to_nv12
@@ -147,8 +147,8 @@ class H264Encoder(BaseEncoder):
         # Encode with immediate output (constqp + zeroReorderDelay)
         h264_bytes = bytes(self.encoder.Encode(nv12))
 
-        # Measure encode end time
-        encode_end_timestamp = time.time() * 1000.0  # ms
+        # Measure encode end time (implicit GPU sync already happened via Encode())
+        encode_end_timestamp = monotonic_ms()
 
         # Extract timestamps from RenderOutput metadata
         client_timestamp = output.metadata.get("client_timestamp", 0.0)

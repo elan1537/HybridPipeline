@@ -563,20 +563,22 @@ async function initWebSocket(wsURL: string) {
             console.log(`[Worker] ws.onmessage #${ws['_messageCount']}: ${arrBuf.byteLength} bytes`);
         }
 
-        // Ping response 처리 (type(1) + padding(7) + clientTime(8) + serverTime(8) = 24 bytes)
-        if (arrBuf.byteLength === 24) {
+        // Ping response 처리 — NTP-style 4-timestamp
+        // Format: type(1) + padding(7) + c0(8) + s1(8) + s2(8) = 32 bytes
+        if (arrBuf.byteLength === 32) {
             const dv = new DataView(arrBuf);
             const type = dv.getUint8(0);
             if (type === 254) { // pong message type
-                const clientTime = dv.getFloat64(8, true);   // 8바이트 정렬된 위치
-                const serverTime = dv.getFloat64(16, true);  // 16바이트 위치
+                const clientTime = dv.getFloat64(8, true);   // c0: client ping send
+                const s1 = dv.getFloat64(16, true);          // s1: server ping receive
+                const s2 = dv.getFloat64(24, true);          // s2: server pong send
 
                 self.postMessage({
                     type: 'pong-received',
                     clientRequestTime: clientTime,
-                    serverReceiveTime: serverTime,
-                    serverSendTime: serverTime, // 간단히 동일하다고 가정
-                    clientResponseTime: clientReceiveTime
+                    serverReceiveTime: s1,
+                    serverSendTime: s2,
+                    clientResponseTime: performance.timeOrigin + performance.now()  // c3
                 });
                 return;
             }

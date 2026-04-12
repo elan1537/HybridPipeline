@@ -98,6 +98,9 @@ export class FPSTestPanel extends BasePanel {
     const duration = hasValidData ? (result.measurementDurationMs / 1000).toFixed(1) : '0.0';
 
     // 각 메트릭의 유효성 검사
+    const displayedFPS = (result.displayedFPS && isFinite(result.displayedFPS)) ? result.displayedFPS : 0;
+    const dropRatio = (result.dropRatio && isFinite(result.dropRatio)) ? result.dropRatio : 0;
+    const supersededFrames = result.supersededFrames || 0;
     const pureDecodeFPS = (result.pureDecodeFPS && isFinite(result.pureDecodeFPS)) ? result.pureDecodeFPS : 0;
     const frameProcessingFPS = (result.frameProcessingFPS && isFinite(result.frameProcessingFPS)) ? result.frameProcessingFPS : 0;
     const renderFPS = (result.renderFPS && isFinite(result.renderFPS)) ? result.renderFPS : 0;
@@ -116,9 +119,9 @@ export class FPSTestPanel extends BasePanel {
     let warningHtml = '';
     const warnings: string[] = [];
 
+    if (displayedFPS === 0) warnings.push('No displayed frames recorded');
     if (pureDecodeFPS === 0) warnings.push('No decode data collected');
     if (frameProcessingFPS === 0) warnings.push('No frame processing data collected');
-    if (renderFPS === 0) warnings.push('No render data collected');
     if (totalFrames < 10) warnings.push(`Low frame count (${totalFrames})`);
     if (!hasValidData) warnings.push('Invalid measurement duration');
 
@@ -159,10 +162,11 @@ export class FPSTestPanel extends BasePanel {
       <div style="margin-bottom: 4px; padding: 2px 0;">
         <div style="color: #00ff00; font-size: 12px; margin-bottom: 1px;">FPS Metrics:</div>
         <div style="margin-left: 8px; font-size: 11px;">
+          <div style="font-weight: bold;">Displayed: ${displayedFPS.toFixed(2)} fps (presented frames / duration)</div>
+          <div>Drop Ratio: ${(dropRatio * 100).toFixed(1)}% (${supersededFrames} superseded)</div>
           <div>Pure Decode: ${pureDecodeFPS.toFixed(2)} fps (${avgDecodeTime.toFixed(1)}ms avg)</div>
           <div>Frame Processing: ${frameProcessingFPS.toFixed(2)} fps (${avgProcessingTime.toFixed(1)}ms avg)</div>
           <div>Render: ${renderFPS.toFixed(2)} fps (${avgRenderTime.toFixed(1)}ms avg)</div>
-          <div>Legacy Decode: ${legacyDecodeFPS.toFixed(2)} fps</div>
         </div>
       </div>
 
@@ -181,7 +185,7 @@ export class FPSTestPanel extends BasePanel {
     this.setVisible(this.fpsTestResult, true);
 
     // 마지막 결과 저장 및 다운로드 버튼 표시 (유효한 데이터가 있을 때만)
-    if (hasValidData && (pureDecodeFPS > 0 || frameProcessingFPS > 0 || renderFPS > 0)) {
+    if (hasValidData && (displayedFPS > 0 || pureDecodeFPS > 0 || frameProcessingFPS > 0)) {
       this.setVisible(this.fpsResultDownload, true);
       debug.logFPS('[FPSTestPanel] Result displayed successfully with download option');
     } else {
@@ -270,16 +274,19 @@ Test Configuration:
 - Render Mode: ${config.renderMode}
 - Test Duration: ${duration} seconds
 
-Enhanced Performance Metrics:
+Primary FPS Metric (present-based):
+- Displayed FPS: ${result.displayedFPS.toFixed(2)} fps (presented_frames / duration)
+- Drop Ratio: ${(result.dropRatio * 100).toFixed(1)}% (${result.supersededFrames} frames superseded between RAF ticks)
+- Presented Frames: ${result.totalFrames}
+
+Supplementary FPS Metrics:
 - Pure Decode FPS: ${result.pureDecodeFPS.toFixed(2)} fps (${result.avgDecodeTime.toFixed(2)} ms avg per frame)
 - Frame Processing FPS: ${result.frameProcessingFPS.toFixed(2)} fps (${result.avgProcessingTime.toFixed(2)} ms avg per frame)
 - Render FPS: ${result.renderFPS.toFixed(2)} fps (${result.avgRenderTime.toFixed(2)} ms avg per frame)
-- Legacy Decode FPS: ${result.decodeFPS.toFixed(2)} fps (main thread measurement)
-- Total Frames Processed: ${result.totalFrames}
 
 Performance Analysis:
-- Most accurate FPS metric: Pure Decode FPS (${result.pureDecodeFPS.toFixed(2)} fps)
-- Decode processing is ${result.pureDecodeFPS > result.decodeFPS ? 'faster' : 'slower'} than legacy measurement suggests
+- Primary FPS: Displayed FPS (${result.displayedFPS.toFixed(2)} fps) — count of frames actually presented to screen
+- Decode throughput: ${result.pureDecodeFPS.toFixed(2)} fps (app-level decode latency, includes browser scheduling)
 - Frame processing overhead: ${result.avgProcessingTime.toFixed(2)} ms per frame
 - Rendering overhead: ${result.avgRenderTime.toFixed(2)} ms per frame
 

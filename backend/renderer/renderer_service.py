@@ -12,6 +12,7 @@ import struct
 from pathlib import Path
 
 from renderer.data_types import CameraFrame, RenderPayload
+from renderer.utils.clock import monotonic_ms
 
 # Import torch for GPU operations
 try:
@@ -381,9 +382,21 @@ class RendererService:
                 # Convert numpy to torch (if needed)
                 camera = camera_to_torch(camera, device="cuda")
 
-                # Render scene
+                # Render scene (with GPU-accurate timing)
                 try:
+                    torch.cuda.synchronize()  # flush residual GPU work
+                    render_start = monotonic_ms()
+
                     render_output = await self.scene_renderer.render(camera)
+
+                    torch.cuda.synchronize()  # wait for GPU render completion
+                    render_end = monotonic_ms()
+
+                    # Attach timing metadata for downstream encoder
+                    render_output.metadata['render_start_timestamp'] = render_start
+                    render_output.metadata['render_end_timestamp'] = render_end
+                    render_output.metadata['client_timestamp'] = camera.client_timestamp or 0.0
+                    render_output.metadata['server_timestamp'] = camera.server_timestamp or 0.0
                 except Exception as e:
                     print(f"[RENDER] Render error at frame {camera.frame_id}: {e}")
                     continue

@@ -70,7 +70,7 @@ class JpegEncoder(BaseEncoder):
 
         From backend-feedforward-20251021/server.py:344-358
         """
-        import time
+        from renderer.utils.clock import monotonic_ms
 
         output.validate()
         H, W = output.color.shape[:2]
@@ -88,8 +88,8 @@ class JpegEncoder(BaseEncoder):
         depth_f16 = depth_to_log_float16(output.depth, output.alpha, near, far)
         depth_bytes = depth_f16.cpu().numpy().tobytes()
 
-        # Measure encode end time
-        encode_end_timestamp = time.time() * 1000.0  # ms
+        # Measure encode end time (implicit GPU sync already happened via .cpu())
+        encode_end_timestamp = monotonic_ms()
 
         # Extract timestamps from RenderOutput metadata
         client_timestamp = output.metadata.get("client_timestamp", 0.0)

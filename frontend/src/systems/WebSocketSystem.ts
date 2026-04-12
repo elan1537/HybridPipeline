@@ -25,7 +25,7 @@ export interface WebSocketSystemCallbacks {
   }) => void;
   onFrameReceive?: (frameId: number, serverTimestamps: any) => void;
   onFrameDecoded?: (frameId: number, decodeCompleteTime: number) => void;
-  onClockSync?: (clientRequestTime: number, serverReceiveTime: number, serverSendTime: number) => void;
+  onClockSync?: (clientRequestTime: number, serverReceiveTime: number, serverSendTime: number, clientResponseTime: number) => void;
 }
 
 export class WebSocketSystem implements System {
@@ -45,6 +45,10 @@ export class WebSocketSystem implements System {
 
   // Callbacks for external event handling
   private callbacks: WebSocketSystemCallbacks = {};
+
+  // Clock sync ping interval
+  private pingIntervalId: number | null = null;
+  private readonly pingIntervalMs: number = 5000; // 5 seconds
 
   /**
    * Set callbacks for external event handling
@@ -122,6 +126,7 @@ export class WebSocketSystem implements System {
   }
 
   dispose(): void {
+    this.stopClockSyncInterval();
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
@@ -296,6 +301,37 @@ export class WebSocketSystem implements System {
     });
   }
 
+  /**
+   * Send clock sync ping to server via worker
+   */
+  private sendClockSyncPing(): void {
+    if (!this.worker || this.currentState !== ConnectionState.Connected) return;
+    const clientTime = performance.timeOrigin + performance.now();
+    this.worker.postMessage({ type: 'ping', clientTime });
+  }
+
+  /**
+   * Start periodic clock sync pings
+   */
+  private startClockSyncInterval(): void {
+    this.stopClockSyncInterval();
+    // Send first ping immediately
+    this.sendClockSyncPing();
+    this.pingIntervalId = window.setInterval(() => {
+      this.sendClockSyncPing();
+    }, this.pingIntervalMs);
+  }
+
+  /**
+   * Stop periodic clock sync pings
+   */
+  private stopClockSyncInterval(): void {
+    if (this.pingIntervalId !== null) {
+      clearInterval(this.pingIntervalId);
+      this.pingIntervalId = null;
+    }
+  }
+
   // ========================================================================
   // Private Methods
   // ========================================================================
@@ -346,12 +382,13 @@ export class WebSocketSystem implements System {
         break;
 
       case "pong-received":
-        // Clock sync pong (for latency tracking)
+        // Clock sync pong — NTP-style 4-timestamp (c0, s1, s2, c3)
         if (this.callbacks.onClockSync) {
           this.callbacks.onClockSync(
             msg.clientRequestTime,
             msg.serverReceiveTime,
-            msg.serverSendTime
+            msg.serverSendTime,
+            msg.clientResponseTime
           );
         }
         break;
@@ -385,6 +422,7 @@ export class WebSocketSystem implements System {
       case "ws-ready":
         console.log("[WebSocketSystem] Connection ready");
         this.handleConnectionState("open");
+        this.startClockSyncInterval();
         if (this.callbacks.onConnectionStateChange) {
           this.callbacks.onConnectionStateChange('connected');
         }
@@ -400,6 +438,7 @@ export class WebSocketSystem implements System {
 
       case "ws-close":
         console.log("[WebSocketSystem] Connection closed");
+        this.stopClockSyncInterval();
         this.handleConnectionState("closed");
         if (this.callbacks.onConnectionStateChange) {
           this.callbacks.onConnectionStateChange('closed');
